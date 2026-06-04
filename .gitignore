@@ -34,6 +34,7 @@ Thumbs.db
 
 # Claude
 .claude/
-docs/references/exa-hallucination-detector/
-docs/references/mlflow/
+
+# Reference materials (local copies, cited in README)
+docs/references/
 ai-first-pipeline-inventory-2026-05-28.md
