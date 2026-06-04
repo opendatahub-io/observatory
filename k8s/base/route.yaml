@@ -1,0 +1,16 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: observatory
+  labels:
+    app.kubernetes.io/name: observatory
+spec:
+  to:
+    kind: Service
+    name: observatory
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

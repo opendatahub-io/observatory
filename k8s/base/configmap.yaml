@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: observatory-config
+  labels:
+    app.kubernetes.io/name: observatory
+data:
+  OBSERVATORY_DATABASE_PATH: /data/observatory.db
+  OBSERVATORY_STATIC_DIR: /app/frontend/dist
+  OBSERVATORY_COLLECTOR_INTERVAL_MINUTES: "30"
+  OBSERVATORY_HOST: "0.0.0.0"
+  OBSERVATORY_PORT: "8000"

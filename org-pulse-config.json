@@ -1,0 +1,194 @@
+{
+  "retentionDays": 30,
+  "pipelines": [
+    {
+      "slug": "rfe-autofixer",
+      "order": 2,
+      "name": "RFE Review Pipeline",
+      "group": "RFE",
+      "description": "Discovers RHAIRFE Jira issues, scores against rubric, auto-revises descriptions",
+      "owner": "jforrester",
+      "repo": {
+        "url": "https://gitlab.com/redhat/rhel-ai/agentic-ci/rfe-autofixer",
+        "platform": "gitlab"
+      },
+      "schedule": {
+        "cron": "0 11,23 * * *",
+        "expectedIntervalMinutes": 720,
+        "timeoutMinutes": 240
+      },
+      "jobs": [
+        "autofix-rfe"
+      ],
+      "jiraContract": {
+        "projects": [
+          "RHAIRFE"
+        ],
+        "labelsApplied": [
+          "rfe-creator-autofix-rubric-pass",
+          "rfe-creator-autofix-rubric-fail",
+          "rfe-creator-feasibility-pass",
+          "rfe-creator-feasibility-fail"
+        ]
+      },
+      "images": [
+        {
+          "name": "CI runner base",
+          "ref": "registry.access.redhat.com/ubi9/ubi-minimal:latest"
+        }
+      ],
+      "skillRepos": [
+        {
+          "repo": "https://github.com/opendatahub-io/rfe-creator",
+          "branch": "ci-prod",
+          "purpose": "RFE review, split, auto-fix skills"
+        }
+      ],
+      "sharedLibs": [
+        {
+          "repo": "https://gitlab.com/redhat/rhel-ai/agentic-ci/ai-agentic-lib",
+          "purpose": "Claude Code container runner, Jira CLI ops"
+        }
+      ],
+      "telemetry": {
+        "otelCollector": "local",
+        "otelEndpoint": "http://127.0.0.1:4318",
+        "summaryScript": "otel-summary.py",
+        "status": "active"
+      },
+      "artifacts": {
+        "resultsRepo": "https://gitlab.com/redhat/rhel-ai/agentic-ci/rfe-autofixer-results",
+        "status": "active"
+      },
+      "status": "production",
+      "addedAt": "2026-05-28T00:00:00Z"
+    },
+    {
+      "slug": "strat-pipeline",
+      "order": 3,
+      "name": "Strat Pipeline",
+      "group": "Strats",
+      "description": "Strategic analysis and reporting pipeline",
+      "owner": "eignatowicz",
+      "repo": {
+        "url": "https://gitlab.com/redhat/rhel-ai/agentic-ci/strat-pipeline",
+        "platform": "gitlab"
+      },
+      "schedule": {
+        "cron": "0 */2 * * *",
+        "expectedIntervalMinutes": 120,
+        "timeoutMinutes": 240
+      },
+      "jobs": [],
+      "images": [],
+      "skillRepos": [],
+      "sharedLibs": [],
+      "artifacts": {
+        "resultsRepo": "https://gitlab.com/redhat/rhel-ai/agentic-ci/strat-pipeline-data",
+        "status": "active"
+      },
+      "status": "production",
+      "addedAt": "2026-05-28T00:00:00Z"
+    },
+    {
+      "slug": "autofix",
+      "order": 6,
+      "name": "Autofix Pipeline",
+      "group": "Bugs",
+      "description": "Automated fix pipeline for agentic CI",
+      "owner": "emacchi",
+      "repo": {
+        "url": "https://gitlab.com/redhat/rhel-ai/agentic-ci/autofix",
+        "platform": "gitlab"
+      },
+      "jobs": [],
+      "jobPatterns": [
+        "prepare-*",
+        "iterate-*",
+        "triage-*",
+        "autofix-*"
+      ],
+      "images": [],
+      "skillRepos": [],
+      "sharedLibs": [],
+      "status": "production",
+      "addedAt": "2026-05-28T00:00:00Z",
+      "schedule": {
+        "cron": "*/30 * * * *",
+        "expectedIntervalMinutes": 30
+      }
+    },
+    {
+      "slug": "epic-decomposer",
+      "order": 5,
+      "name": "Epic Decomposer Pipeline",
+      "group": "Epics",
+      "description": "Decomposes epics into features and stories",
+      "owner": "jforrester",
+      "repo": {
+        "url": "https://gitlab.com/redhat/rhel-ai/agentic-ci/epic-decomposer",
+        "platform": "gitlab"
+      },
+      "jobs": [],
+      "images": [],
+      "skillRepos": [],
+      "sharedLibs": [],
+      "status": "production",
+      "addedAt": "2026-05-28T00:00:00Z"
+    },
+    {
+      "slug": "rfe-assessor",
+      "order": 1,
+      "name": "RFE Assessor Pipeline",
+      "group": "RFE",
+      "description": "Assesses RFE issues for quality and completeness",
+      "owner": "jgreene",
+      "repo": {
+        "url": "https://gitlab.com/redhat/rhel-ai/agentic-ci/rfe-assessor",
+        "platform": "gitlab"
+      },
+      "jobs": [
+        "assess-rfe"
+      ],
+      "images": [],
+      "skillRepos": [],
+      "sharedLibs": [],
+      "artifacts": {
+        "resultsRepo": "https://gitlab.com/redhat/rhel-ai/agentic-ci/rfe-assess-data",
+        "status": "active"
+      },
+      "status": "production",
+      "addedAt": "2026-05-28T00:00:00Z",
+      "schedule": {
+        "cron": "0 4 * * *",
+        "expectedIntervalMinutes": 1440
+      }
+    },
+    {
+      "slug": "strat-security-reviews",
+      "order": 4,
+      "name": "Strat Security Reviews Pipeline",
+      "group": "Strats",
+      "description": "Strategic security reviews for RHOAI",
+      "owner": "jtanner",
+      "repo": {
+        "url": "https://gitlab.cee.redhat.com/rhoai-security/strat-security-reviews",
+        "platform": "gitlab"
+      },
+      "jobs": [],
+      "images": [],
+      "skillRepos": [],
+      "sharedLibs": [],
+      "artifacts": {
+        "resultsRepo": "https://gitlab.cee.redhat.com/rhoai-security/strat-security-review-artifacts",
+        "status": "active"
+      },
+      "status": "production",
+      "addedAt": "2026-05-28T00:00:00Z",
+      "schedule": {
+        "cron": "0 * * * *",
+        "expectedIntervalMinutes": 60
+      }
+    }
+  ]
+}

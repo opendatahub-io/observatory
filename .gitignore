@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+src/frontend/dist/
+
+# Runtime data
+data/observatory.db
+data/observatory.db-shm
+data/observatory.db-wal
+var/
+
+# Secrets
+.env
+raw-creds.md
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/
+docs/references/exa-hallucination-detector/
+docs/references/mlflow/

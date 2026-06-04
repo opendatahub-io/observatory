@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://observatory.example.com/schemas/run-manifest.v1.schema.json",
+  "title": "Run Manifest v1",
+  "description": "Schema for the run-manifest.json file produced by CI pipeline jobs. Observatory parses this file to populate provenance data (commands, packages, containers).",
+  "type": "object",
+  "required": ["version"],
+  "properties": {
+    "version": {
+      "const": "1",
+      "description": "Schema version. Must be \"1\"."
+    },
+    "pipeline_slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "Observatory pipeline slug for correlation. Must match the slug registered in Observatory."
+    },
+    "commands": {
+      "type": "array",
+      "description": "Ordered list of commands executed during the pipeline run.",
+      "items": {
+        "$ref": "#/$defs/Command"
+      }
+    },
+    "packages": {
+      "type": "object",
+      "description": "Map of package manager name (e.g. 'pip', 'npm', 'rpm') to a list of packages.",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/Package"
+        }
+      }
+    },
+    "containers": {
+      "type": "array",
+      "description": "List of container images used or built during the pipeline run.",
+      "items": {
+        "$ref": "#/$defs/Container"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "Command": {
+      "type": "object",
+      "required": ["step", "command"],
+      "properties": {
+        "step": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Execution order (0-indexed)."
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The command string that was executed."
+        },
+        "exit_code": {
+          "type": "integer",
+          "description": "Exit code of the command. 0 indicates success."
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Duration of the command in milliseconds."
+        }
+      },
+      "additionalProperties": false
+    },
+    "Package": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Package name (e.g. 'requests', 'numpy')."
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Installed version string (e.g. '2.31.0')."
+        }
+      },
+      "additionalProperties": false
+    },
+    "Container": {
+      "type": "object",
+      "required": ["image_ref"],
+      "properties": {
+        "image_ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Full container image reference (e.g. 'quay.io/rhai/runner:v1.2')."
+        },
+        "image_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "description": "Image content digest (e.g. 'sha256:abc123...')."
+        },
+        "platform": {
+          "type": "string",
+          "description": "Target platform (e.g. 'linux/amd64')."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,39 @@
+[project]
+name = "observatory"
+version = "0.1.0"
+description = "Observability platform for RHAI AI-First pipeline infrastructure"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "aiosqlite>=0.20.0",
+    "httpx>=0.28.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
+    "prometheus-fastapi-instrumentator>=7.0.0",
+    "cryptography>=43.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.28.0",
+    "ruff>=0.8.0",
+    "honcho>=2.0.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["src/tests"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["backend*"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120

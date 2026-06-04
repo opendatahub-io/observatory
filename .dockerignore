@@ -1,0 +1,40 @@
+# Version control
+.git/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+observatory.egg-info/
+
+# Node
+node_modules/
+
+# Frontend build output (rebuilt inside Docker)
+src/frontend/dist/
+
+# Data (runtime DB is on a volume, but seed.json needs to be in the image)
+data/observatory.db
+
+# Tests and docs
+src/tests/
+docs/
+*.md
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# Local dev
+Procfile.dev
+var/

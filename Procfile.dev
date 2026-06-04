@@ -1,0 +1,2 @@
+backend: PYTHONPATH=src .venv/bin/uvicorn backend.app:app --reload --reload-dir src/backend --host 127.0.0.1 --port 8000
+frontend: npm run dev --prefix src/frontend

@@ -1,0 +1,291 @@
+#!/usr/bin/env python3
+"""Extract verifiable claims from pipeline artifact files.
+
+Reads artifact markdown from ./var/artifacts/, calls Claude via Vertex AI
+to decompose text into atomic verifiable claims, and writes structured
+JSON to ./var/claims/.
+
+Usage:
+    python scripts/extract-claims.py                           # all pipelines
+    python scripts/extract-claims.py rfe-assessor              # single pipeline
+    python scripts/extract-claims.py --file path/to/file.md    # single file
+    python scripts/extract-claims.py --limit 5                 # first N files per pipeline
+
+Requires:
+    - anthropic[vertex] pip package
+    - GCP credentials at ~/.config/gcloud/application_default_credentials.json
+      (or GOOGLE_APPLICATION_CREDENTIALS env var)
+    - ANTHROPIC_VERTEX_PROJECT_ID env var (default: itpc-gcp-ai-eng-claude)
+"""
+
+import argparse
+import concurrent.futures
+import json
+import logging
+import os
+import sys
+import threading
+from pathlib import Path
+
+try:
+    from anthropic import AnthropicVertex
+except ImportError:
+    sys.exit("anthropic[vertex] is required: pip install 'anthropic[vertex]'")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-5s %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("extract-claims")
+
+ROOT = Path(__file__).resolve().parent.parent
+ARTIFACTS = ROOT / "var" / "artifacts"
+CLAIMS = ROOT / "var" / "claims"
+
+# Load .env
+env_path = ROOT / ".env"
+if env_path.exists():
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, _, val = line.partition("=")
+            os.environ.setdefault(key.strip(), val.strip())
+
+PROJECT_ID = os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID", "itpc-gcp-ai-eng-claude")
+REGION = os.environ.get("CLOUD_ML_REGION", "us-east5")
+MODEL = os.environ.get("CLAIM_EXTRACTION_MODEL", "claude-sonnet-4-6")
+
+EXTRACTION_PROMPT = """\
+You are a factual claim extraction system. Given the following document produced by an AI agent, extract all verifiable factual claims.
+
+Rules:
+1. Extract only statements that can be independently verified as true or false
+2. Skip subjective opinions, recommendations, and scoring rationale
+3. Decompose compound claims into atomic statements (one fact per claim)
+4. Preserve enough context for each claim to be understood standalone
+5. Classify each claim by type:
+   - "factual": concrete facts about things, people, products, dates
+   - "architectural": claims about software architecture, dependencies, APIs
+   - "security": claims about vulnerabilities, risks, security properties
+   - "scope": claims about project scope, size, complexity
+   - "attribution": claims about who did what, ownership, responsibility
+
+Return a JSON array of objects with these fields:
+- "claim": the atomic verifiable statement
+- "type": one of factual, architectural, security, scope, attribution
+- "original_text": the exact source sentence(s) from the document
+
+Return ONLY the JSON array, no markdown fences, no explanation.
+
+Document:
+"""
+
+
+def get_client() -> AnthropicVertex:
+    return AnthropicVertex(
+        project_id=PROJECT_ID,
+        region=REGION,
+    )
+
+
+def extract_claims_from_text(client: AnthropicVertex, text: str) -> list[dict]:
+    """Call Claude to extract claims from text."""
+    if len(text) < 50:
+        return []
+
+    # Truncate very large files
+    if len(text) > 50000:
+        text = text[:50000] + "\n\n[truncated]"
+
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=8192,
+            messages=[
+                {"role": "user", "content": EXTRACTION_PROMPT + text},
+            ],
+        )
+
+        content = response.content[0].text.strip()
+
+        # Handle markdown fences
+        if content.startswith("```"):
+            content = content.split("\n", 1)[1]
+            if content.endswith("```"):
+                content = content[:-3]
+            content = content.strip()
+
+        claims = json.loads(content)
+        if not isinstance(claims, list):
+            log.warning("Expected JSON array, got %s", type(claims).__name__)
+            return []
+
+        return claims
+
+    except json.JSONDecodeError as exc:
+        log.warning("Failed to parse claims JSON: %s", exc)
+        return []
+    except Exception as exc:
+        log.error("API call failed: %s", exc)
+        return []
+
+
+def find_artifact_files(slug: str | None = None) -> list[tuple[str, Path]]:
+    """Find markdown artifact files suitable for claim extraction.
+
+    Only processes agent OUTPUT files, not source/ground-truth inputs.
+    """
+    results = []
+    search_dir = ARTIFACTS / slug if slug else ARTIFACTS
+
+    for md_path in search_dir.rglob("*.md"):
+        # Skip hidden files and git
+        if "/.git/" in str(md_path) or md_path.name.startswith("."):
+            continue
+
+        rel = md_path.relative_to(ARTIFACTS)
+        pipeline_slug = rel.parts[0]
+        path_str = str(rel)
+        name = md_path.name
+
+        # --- Skip source/ground-truth files ---
+
+        # Security reviews: strat-text is the input
+        if "-strat-text.md" in name:
+            continue
+
+        # Strat pipeline: strat-originals/ are source RFE texts (including old/)
+        if "/strat-originals" in path_str:
+            continue
+
+        # Strat pipeline: only RHAISTRAT-prefixed filenames matter
+        if "strat-pipeline" in path_str and not name.startswith("RHAISTRAT-"):
+            continue
+
+        # Skip CI job artifacts — they're duplicates of data-repo files
+        if "/ci-jobs/" in path_str:
+            continue
+
+        # Skip READMEs and rubrics
+        if name in ("README.md", "strat-rubric.md"):
+            continue
+
+        results.append((pipeline_slug, md_path))
+
+    def _sort_key(item: tuple[str, Path]) -> int:
+        import re
+        m = re.search(r"RHAISTRAT-(\d+)", item[1].name)
+        return int(m.group(1)) if m else 0
+
+    results.sort(key=_sort_key, reverse=True)
+    return results
+
+
+def process_file(client: AnthropicVertex, pipeline_slug: str, artifact_path: Path) -> int:
+    """Extract claims from a single file. Returns number of claims extracted."""
+    rel_path = artifact_path.relative_to(ARTIFACTS)
+    claims_file = CLAIMS / rel_path.with_suffix(".claims.json")
+
+    # Skip if already processed
+    if claims_file.exists():
+        return 0
+
+    text = artifact_path.read_text(errors="replace")
+    if len(text) < 100:
+        return 0
+
+    log.info("[%s] Extracting claims from %s", pipeline_slug, rel_path)
+    claims = extract_claims_from_text(client, text)
+
+    if not claims:
+        return 0
+
+    # Write results
+    claims_file.parent.mkdir(parents=True, exist_ok=True)
+    output = {
+        "source_file": str(rel_path),
+        "pipeline_slug": pipeline_slug,
+        "claim_count": len(claims),
+        "claims": claims,
+    }
+    claims_file.write_text(json.dumps(output, indent=2))
+    log.info("[%s] Extracted %d claims → %s", pipeline_slug, len(claims), claims_file.relative_to(ROOT))
+
+    return len(claims)
+
+
+_counter_lock = threading.Lock()
+_total_claims = 0
+_total_files = 0
+
+
+def _process_worker(args_tuple: tuple) -> None:
+    """Worker function for thread pool."""
+    client, pipeline_slug, artifact_path = args_tuple
+    global _total_claims, _total_files
+    try:
+        count = process_file(client, pipeline_slug, artifact_path)
+        if count > 0:
+            with _counter_lock:
+                _total_claims += count
+                _total_files += 1
+    except Exception:
+        log.exception("[%s] Failed: %s", pipeline_slug, artifact_path.name)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Extract claims from pipeline artifacts")
+    parser.add_argument("slugs", nargs="*", help="Pipeline slug(s) (default: all)")
+    parser.add_argument("--file", type=str, help="Process a single file")
+    parser.add_argument("--limit", type=int, default=0, help="Max files per pipeline (0=all)")
+    parser.add_argument("--workers", type=int, default=5, help="Concurrent extraction workers (default: 5)")
+    args = parser.parse_args()
+
+    log.info("Using Vertex AI project=%s region=%s model=%s workers=%d", PROJECT_ID, REGION, MODEL, args.workers)
+
+    client = get_client()
+
+    if args.file:
+        path = Path(args.file)
+        if not path.exists():
+            log.error("File not found: %s", path)
+            sys.exit(1)
+        slug = path.relative_to(ARTIFACTS).parts[0] if str(path).startswith(str(ARTIFACTS)) else "unknown"
+        count = process_file(client, slug, path)
+        log.info("Done. Extracted %d claims.", count)
+        return
+
+    # Find files
+    if args.slugs:
+        files = []
+        for slug in args.slugs:
+            files.extend(find_artifact_files(slug))
+    else:
+        files = find_artifact_files()
+
+    if not files:
+        log.error("No artifact files found")
+        sys.exit(1)
+
+    # Apply per-pipeline limit
+    if args.limit > 0:
+        by_pipeline: dict[str, list[tuple[str, Path]]] = {}
+        for slug, path in files:
+            by_pipeline.setdefault(slug, []).append((slug, path))
+        files = []
+        for slug, pipeline_files in by_pipeline.items():
+            files.extend(pipeline_files[:args.limit])
+
+    log.info("Processing %d artifact files with %d workers", len(files), args.workers)
+
+    work_items = [(client, slug, path) for slug, path in files]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
+        pool.map(_process_worker, work_items)
+
+    log.info("Done. Extracted %d claims from %d files.", _total_claims, _total_files)
+
+
+if __name__ == "__main__":
+    main()

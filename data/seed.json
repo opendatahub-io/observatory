@@ -1,0 +1,334 @@
+{
+  "pipelines": [
+    {
+      "slug": "rfe-review",
+      "group": "RFE",
+      "display_order": 2,
+      "name": "RFE Review Pipeline",
+      "description": "Discovers RHAIRFE Jira issues via JQL, runs auto-fix with rubric scoring and feasibility assessment, auto-revises descriptions, and submits back to Jira.",
+      "owner": "Jessica Forrester",
+      "repo_url": "https://gitlab.com/redhat/rhel-ai/agentic-ci/rfe-autofixer",
+      "platform": "gitlab",
+      "cron": "0 */12 * * *",
+      "expected_interval_minutes": 720,
+      "timeout_minutes": 240,
+      "status": "production",
+      "skills": [
+        {
+          "repo_url": "https://github.com/opendatahub-io/rfe-creator",
+          "branch": "ci-prod",
+          "purpose": "RFE review, split, auto-fix, and submission skills"
+        }
+      ],
+      "shared_libs": [],
+      "jira_contracts": [
+        {
+          "project": "RHAIRFE",
+          "labels_applied": [
+            "rfe-creator-autofix-rubric-pass",
+            "rfe-creator-autofix-rubric-fail",
+            "rfe-creator-feasibility-pass",
+            "rfe-creator-feasibility-fail"
+          ]
+        }
+      ],
+      "artifact_config": {
+        "results_repo": "https://gitlab.com/redhat/rhel-ai/agentic-ci/rfe-autofixer-results"
+      }
+    },
+    {
+      "slug": "strat-pipeline",
+      "group": "Strats",
+      "display_order": 3,
+      "name": "Strategy Pipeline",
+      "description": "Discovers approved RFEs via JQL, creates and refines strategies with parallel AI review (feasibility, testability, scope, architecture), pushes results to data repo, and triggers dashboard rebuild.",
+      "owner": "Eder Ignatowicz",
+      "repo_url": "https://gitlab.com/redhat/rhel-ai/agentic-ci/strat-pipeline",
+      "platform": "gitlab",
+      "cron": "0 */3 * * *",
+      "expected_interval_minutes": 180,
+      "timeout_minutes": 180,
+      "status": "production",
+      "skills": [
+        {
+          "repo_url": "https://github.com/opendatahub-io/strat-creator",
+          "branch": null,
+          "purpose": "Strategy creation and refinement skills"
+        },
+        {
+          "repo_url": "https://github.com/opendatahub-io/assess-strat",
+          "branch": null,
+          "purpose": "Strategy assessment and review skills"
+        }
+      ],
+      "shared_libs": [],
+      "jira_contracts": [
+        {
+          "project": "RHAISTRAT",
+          "labels_applied": [
+            "strat-creator-rubric-pass",
+            "strat-creator-needs-attention",
+            "strat-creator-human-sign-off"
+          ]
+        }
+      ],
+      "artifact_config": {
+        "results_repo": "https://gitlab.com/redhat/rhel-ai/agentic-ci/strat-pipeline-data"
+      }
+    },
+    {
+      "slug": "strat-dashboard",
+      "group": "Strats",
+      "display_order": 4,
+      "name": "Strategy Dashboard",
+      "description": "Rebuilds the executive dashboard showing strategy creation, refinement, and review metrics. Triggered after strat-pipeline runs.",
+      "owner": "Eder Ignatowicz",
+      "repo_url": "https://gitlab.com/redhat/rhel-ai/agentic-ci/strat-dashboard",
+      "platform": "gitlab",
+      "cron": null,
+      "expected_interval_minutes": null,
+      "timeout_minutes": null,
+      "status": "production",
+      "skills": [],
+      "shared_libs": [],
+      "jira_contracts": [],
+      "artifact_config": null
+    },
+    {
+      "slug": "epic-decomposer",
+      "group": "Epics",
+      "display_order": 5,
+      "name": "Epic Decomposer",
+      "description": "Decomposes epics into features and stories with AI-driven analysis of scope, dependencies, and acceptance criteria.",
+      "owner": "Jessica Forrester",
+      "repo_url": "https://gitlab.com/redhat/rhel-ai/agentic-ci/epic-decomposer",
+      "platform": "gitlab",
+      "cron": null,
+      "expected_interval_minutes": null,
+      "timeout_minutes": null,
+      "status": "production",
+      "skills": [],
+      "shared_libs": [],
+      "jira_contracts": [],
+      "artifact_config": null
+    },
+    {
+      "slug": "autofix-triage",
+      "group": "Bugs",
+      "display_order": 6,
+      "name": "Bug Triage",
+      "description": "Scans Jira bugs in RHOAIENG, AIPCC, INFERENG, and RHAIENG projects, triages them, identifies component and repo, and applies label state machine.",
+      "owner": "Emilien Macchi",
+      "repo_url": "https://gitlab.com/redhat/rhel-ai/agentic-ci/autofix",
+      "platform": "gitlab",
+      "cron": "*/30 * * * *",
+      "expected_interval_minutes": 30,
+      "timeout_minutes": null,
+      "status": "production",
+      "skills": [],
+      "shared_libs": [
+        {
+          "repo_url": "https://github.com/opendatahub-io/agentic-ci",
+          "purpose": "Python tools and library for agentic CI pipelines"
+        },
+        {
+          "repo_url": "https://gitlab.com/redhat/rhel-ai/agentic-ci/ai-agentic-lib",
+          "purpose": "Claude Code container runner, Jira CLI ops, reusable CI job templates"
+        }
+      ],
+      "jira_contracts": [
+        {
+          "project": "RHOAIENG",
+          "labels_applied": [
+            "jira-triage-pending",
+            "jira-triage-missing-info",
+            "jira-triage-complete"
+          ]
+        },
+        {
+          "project": "AIPCC",
+          "labels_applied": [
+            "jira-triage-pending",
+            "jira-triage-missing-info",
+            "jira-triage-complete"
+          ]
+        },
+        {
+          "project": "INFERENG",
+          "labels_applied": [
+            "jira-triage-pending",
+            "jira-triage-missing-info",
+            "jira-triage-complete"
+          ]
+        },
+        {
+          "project": "RHAIENG",
+          "labels_applied": [
+            "jira-triage-pending",
+            "jira-triage-missing-info",
+            "jira-triage-complete"
+          ]
+        }
+      ],
+      "artifact_config": null
+    },
+    {
+      "slug": "autofix-bugfix",
+      "group": "Bugs",
+      "display_order": 7,
+      "name": "Bug Fix",
+      "description": "Picks up bugs labeled jira-autofix, identifies target repo, creates branch, implements fix using Claude Code and autofix-skills, creates PR/MR, iterates on reviewer comments and CI failures, and posts updates to Jira.",
+      "owner": "Emilien Macchi",
+      "repo_url": "https://gitlab.com/redhat/rhel-ai/agentic-ci/autofix",
+      "platform": "gitlab",
+      "cron": null,
+      "expected_interval_minutes": null,
+      "timeout_minutes": 4320,
+      "status": "production",
+      "skills": [
+        {
+          "repo_url": "https://github.com/opendatahub-io/autofix-skills",
+          "branch": null,
+          "purpose": "Triage, fix, and iteration skills for bug autofix"
+        }
+      ],
+      "shared_libs": [
+        {
+          "repo_url": "https://github.com/opendatahub-io/agentic-ci",
+          "purpose": "Python tools and library for agentic CI pipelines"
+        },
+        {
+          "repo_url": "https://gitlab.com/redhat/rhel-ai/agentic-ci/ai-agentic-lib",
+          "purpose": "Claude Code container runner, Jira CLI ops, reusable CI job templates"
+        }
+      ],
+      "jira_contracts": [
+        {
+          "project": "RHOAIENG",
+          "labels_applied": [
+            "jira-autofix",
+            "jira-autofix-in-progress",
+            "jira-autofix-under-review",
+            "jira-autofix-merged",
+            "jira-autofix-blocked"
+          ]
+        }
+      ],
+      "artifact_config": null
+    },
+    {
+      "slug": "autofix-vllm-backport",
+      "group": "Bugs",
+      "display_order": 8,
+      "name": "vLLM Backport",
+      "description": "Identifies upstream vLLM bugfixes worth cherry-picking to downstream repos.",
+      "owner": "Emilien Macchi",
+      "repo_url": "https://gitlab.com/redhat/rhel-ai/agentic-ci/autofix",
+      "platform": "gitlab",
+      "cron": "0 0 * * 1",
+      "expected_interval_minutes": 10080,
+      "timeout_minutes": null,
+      "status": "production",
+      "skills": [],
+      "shared_libs": [],
+      "jira_contracts": [],
+      "artifact_config": null
+    },
+    {
+      "slug": "autofix-status-summary",
+      "group": "Bugs",
+      "display_order": 9,
+      "name": "Status Summary",
+      "description": "Writes AI-powered health status updates (green/yellow/red) into Jira Features and Initiatives for org-level visibility into feature health.",
+      "owner": "Emilien Macchi",
+      "repo_url": "https://gitlab.com/redhat/rhel-ai/agentic-ci/autofix",
+      "platform": "gitlab",
+      "cron": null,
+      "expected_interval_minutes": null,
+      "timeout_minutes": null,
+      "status": "production",
+      "skills": [],
+      "shared_libs": [],
+      "jira_contracts": [],
+      "artifact_config": null
+    },
+    {
+      "slug": "ai-review",
+      "group": "DevTools",
+      "display_order": 10,
+      "name": "MR Review Bot",
+      "description": "Temporary CodeRabbit replacement for GitLab MR reviews. Reviews code changes and posts feedback, triggered on MR events.",
+      "owner": "Emilien Macchi",
+      "repo_url": "https://gitlab.com/redhat/rhel-ai/core/tools/ai-review",
+      "platform": "gitlab",
+      "cron": null,
+      "expected_interval_minutes": null,
+      "timeout_minutes": null,
+      "status": "production",
+      "skills": [],
+      "shared_libs": [],
+      "jira_contracts": [],
+      "artifact_config": null
+    },
+    {
+      "slug": "package-onboarding",
+      "group": "DevTools",
+      "display_order": 11,
+      "name": "Package Onboarding",
+      "description": "Onboards new RHAI Python packages with automation and AI assistance, run on demand.",
+      "owner": "Emilien Macchi",
+      "repo_url": "https://gitlab.com/redhat/rhel-ai/core/package-onboarding",
+      "platform": "gitlab",
+      "cron": null,
+      "expected_interval_minutes": null,
+      "timeout_minutes": null,
+      "status": "production",
+      "skills": [],
+      "shared_libs": [],
+      "jira_contracts": [],
+      "artifact_config": null
+    },
+    {
+      "slug": "knowledge-sync",
+      "group": "DevTools",
+      "display_order": 12,
+      "name": "Knowledge Sync",
+      "description": "Captures knowledge from merged MRs and feeds it back into skills and context. Currently in draft, waiting for migration to new container images and agentic-ci Python lib.",
+      "owner": "Martin Prpic",
+      "repo_url": "https://gitlab.com/redhat/rhel-ai/agentic-ci/knowledge-sync",
+      "platform": "gitlab",
+      "cron": null,
+      "expected_interval_minutes": null,
+      "timeout_minutes": null,
+      "status": "development",
+      "skills": [
+        {
+          "repo_url": "https://github.com/opendatahub-io/knowledge-skills",
+          "branch": null,
+          "purpose": "Skills for knowledge sync pipeline"
+        }
+      ],
+      "shared_libs": [],
+      "jira_contracts": [],
+      "artifact_config": null
+    },
+    {
+      "slug": "fips-compliance",
+      "group": "DevTools",
+      "display_order": 13,
+      "name": "FIPS Compliance",
+      "description": "Scans all container images per RHOAI version using check-payload, auto-creates blocker JIRAs for failing binaries assigned to responsible component teams, with deduplication to prevent duplicate JIRAs.",
+      "owner": "Gowtham Shanmugasundaram",
+      "repo_url": "https://github.com/red-hat-data-services/fips-compliance",
+      "platform": "github",
+      "cron": "0 0 * * *",
+      "expected_interval_minutes": 1440,
+      "timeout_minutes": null,
+      "status": "development",
+      "skills": [],
+      "shared_libs": [],
+      "jira_contracts": [],
+      "artifact_config": null
+    }
+  ]
+}

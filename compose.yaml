@@ -1,0 +1,16 @@
+services:
+  observatory:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - observatory-data:/data
+    environment:
+      - OBSERVATORY_GITLAB_TOKEN=${OBSERVATORY_GITLAB_TOKEN:-}
+      - OBSERVATORY_GITHUB_TOKEN=${OBSERVATORY_GITHUB_TOKEN:-}
+      - OBSERVATORY_API_KEY=observatory-dev-key
+      - OBSERVATORY_CREDENTIAL_KEY=${OBSERVATORY_CREDENTIAL_KEY:-}
+    restart: unless-stopped
+
+volumes:
+  observatory-data:
