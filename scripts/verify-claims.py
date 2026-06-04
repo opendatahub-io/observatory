@@ -58,9 +58,19 @@ FALLBACK_MODEL = os.environ.get("CLAIM_VERIFICATION_FALLBACK_MODEL", "claude-opu
 FALLBACK_THRESHOLD = 50  # re-verify with Opus if Sonnet confidence <= this
 
 VERIFICATION_PROMPT = """\
-You are a factual claim verification system. Given a CLAIM extracted from an AI-generated document, and SOURCE MATERIAL that the AI was working from, determine whether the claim is supported by the evidence.
+You are a factual claim verification system. Given a CLAIM extracted from an AI-generated document, and SOURCE MATERIAL, determine whether the claim is supported by the evidence.
 
-Evaluate ONLY whether the source material supports the claim. Do not use external knowledge.
+The source material may include several types of evidence:
+1. Co-located artifact files — the original text the AI agent was working from
+2. Architecture context (via arch-query) — authoritative RHOAI component documentation from the architecture-context repository. This includes component fact sheets, platform summaries, dependency graphs, CRDs, ports, RBAC, and container image counts. When a claim references PLATFORM.md, component counts, image counts, ports, or architectural properties, the arch-query output IS the ground truth.
+3. NFR checklist — the security non-functional requirements checklist that agents use to generate security requirements. A generated requirement that maps to a checklist item is valid (not hallucinated).
+4. Active overlays — architecture updates including component renames (e.g., Llama Stack → OGX).
+
+When the claim references specific counts or facts about the RHOAI platform (e.g., "ships N container images", "has N components"), compare against the arch-query platform summary which contains the authoritative numbers.
+
+When verifying architectural claims, connect related facts from the same source. For example, if the source says component X has a kube-rbac-proxy sidecar AND lists port 8443 as HTTPS, then "X uses kube-rbac-proxy on port 8443" is supported.
+
+Evaluate based on the provided source material. Do not use external knowledge.
 
 Return a JSON object with these fields:
 - "verdict": one of "supported", "refuted", "insufficient", "inconclusive"
@@ -102,6 +112,23 @@ def _run_arch_query(component: str) -> str | None:
         )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout[:15000]
+    except Exception:
+        pass
+    return None
+
+
+def _run_arch_query_raw(command: str) -> str | None:
+    """Run an arch-query command with -o raw and return the output."""
+    if not ARCH_QUERY.exists() or not ARCH_CONTEXT.exists():
+        return None
+    try:
+        import subprocess
+        result = subprocess.run(
+            [str(ARCH_QUERY), "--base-dir", str(ARCH_CONTEXT), command, "-o", "raw"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout[:20000]
     except Exception:
         pass
     return None
@@ -294,6 +321,14 @@ def find_source_material(source_file: str, claim_text: str = "", claim_type: str
             if grep_data:
                 result.arch_queries.append(f"grep {term}")
                 texts.append(f"--- Architecture Search: '{term}' (via arch-query grep) ---\n{grep_data}")
+
+        # Platform summary for platform-level claims (image counts, component counts, etc.)
+        platform_keywords = ["platform", "ships", "container image", "component", "PLATFORM.md"]
+        if any(kw.lower() in claim_text.lower() for kw in platform_keywords):
+            platform_data = _run_arch_query_raw("platform")
+            if platform_data:
+                result.arch_queries.append("platform -o raw")
+                texts.append(f"--- Platform Summary (via arch-query platform) ---\n{platform_data}")
 
         # Include overlays for naming/renaming context and recent changes
         overlays = _get_arch_overlays()
