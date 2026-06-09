@@ -21,7 +21,10 @@ import concurrent.futures
 import json
 import logging
 import os
+import re
+import shutil
 import sqlite3
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -60,13 +63,21 @@ FALLBACK_THRESHOLD = 50  # re-verify with Opus if Sonnet confidence <= this
 VERIFICATION_PROMPT = """\
 You are a factual claim verification system. Given a CLAIM extracted from an AI-generated document, and SOURCE MATERIAL, determine whether the claim is supported by the evidence.
 
-The source material may include several types of evidence:
-1. Co-located artifact files — the original text the AI agent was working from
-2. Architecture context (via arch-query) — authoritative RHOAI component documentation from the architecture-context repository. This includes component fact sheets, platform summaries, dependency graphs, CRDs, ports, RBAC, and container image counts. When a claim references PLATFORM.md, component counts, image counts, ports, or architectural properties, the arch-query output IS the ground truth.
-3. NFR checklist — the security non-functional requirements checklist that agents use to generate security requirements. A generated requirement that maps to a checklist item is valid (not hallucinated).
-4. Active overlays — architecture updates including component renames (e.g., Llama Stack → OGX).
+The source material is organized into labeled sections. Pay close attention to the section headers to understand what each piece of evidence represents:
 
-When the claim references specific counts or facts about the RHOAI platform (e.g., "ships N container images", "has N components"), compare against the arch-query platform summary which contains the authoritative numbers.
+1. **"Source:" sections** — the original text the AI agent was working from. These describe what is being PROPOSED or REVIEWED, not necessarily what currently exists in the platform.
+
+2. **"Architecture Context:" and "Architecture Search:" sections** — authoritative RHOAI component documentation from the architecture-context repository (via arch-query). This represents what CURRENTLY EXISTS in the platform. If arch-query returns no results for a term, that term does not exist in the current platform architecture.
+
+3. **"Raw Architecture Doc:" sections** — full component markdown files from the architecture-context repository. Same authority as arch-query — represents current platform state.
+
+4. **"Platform Summary:" sections** — authoritative platform-level facts (image counts, component counts). These are ground truth for the current platform.
+
+5. **"NFR checklist" sections** — security non-functional requirements checklist. A generated requirement that maps to a checklist item is valid (not hallucinated).
+
+6. **"Architecture Overlays" sections** — recent architecture updates including component renames (e.g., Llama Stack → OGX).
+
+CRITICAL DISTINCTION: When a claim says something "does not exist" or "has no reference" in the platform architecture, verify against the arch-query/architecture-doc sections ONLY, not the source document sections. The source documents describe proposals — they may mention a technology that is being newly introduced, which does NOT mean it already exists in the platform.
 
 When verifying architectural claims, connect related facts from the same source. For example, if the source says component X has a kube-rbac-proxy sidecar AND lists port 8443 as HTTPS, then "X uses kube-rbac-proxy on port 8443" is supported.
 
@@ -99,34 +110,35 @@ def get_client() -> AnthropicVertex:
 ARCH_QUERY = ROOT / "var" / "bin" / "arch-query"
 ARCH_CONTEXT = ROOT / "var" / "checkouts" / "architecture-context" / "architecture"
 
+# Versions the agents are most likely referencing
+ARCH_VERSIONS = ["rhoai-3.4", "rhoai-3.3", "rhoai-3.5-ea.1", "rhoai.next"]
+VERSION_RE = re.compile(r"(?:rhoai|RHOAI)[\s-]*([\d.]+(?:-ea\.?\d*)?)", re.IGNORECASE)
 
-def _run_arch_query(component: str) -> str | None:
-    """Run arch-query for a component and return the output."""
-    if not ARCH_QUERY.exists() or not ARCH_CONTEXT.exists():
+
+def _detect_version(text: str) -> str | None:
+    """Detect RHOAI version from text. Returns arch-query version string or None."""
+    m = VERSION_RE.search(text)
+    if not m:
         return None
-    try:
-        import subprocess
-        result = subprocess.run(
-            [str(ARCH_QUERY), "--base-dir", str(ARCH_CONTEXT), "component", component],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout[:15000]
-    except Exception:
-        pass
+    ver = m.group(1)
+    # Map to arch-query version format
+    candidates = [f"rhoai-{ver}", f"rhoai-{ver.replace('.', '-')}"]
+    for c in candidates:
+        if (ARCH_CONTEXT / c).is_dir():
+            return c
     return None
 
 
-def _run_arch_query_raw(command: str) -> str | None:
-    """Run an arch-query command with -o raw and return the output."""
+def _arch_query_cmd(args: list[str], version: str | None = None) -> str | None:
+    """Run an arch-query command and return stdout."""
     if not ARCH_QUERY.exists() or not ARCH_CONTEXT.exists():
         return None
+    cmd = [str(ARCH_QUERY), "--base-dir", str(ARCH_CONTEXT)] + args
+    if version:
+        cmd.extend(["--version", version])
     try:
         import subprocess
-        result = subprocess.run(
-            [str(ARCH_QUERY), "--base-dir", str(ARCH_CONTEXT), command, "-o", "raw"],
-            capture_output=True, text=True, timeout=10,
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout[:20000]
     except Exception:
@@ -134,21 +146,63 @@ def _run_arch_query_raw(command: str) -> str | None:
     return None
 
 
-def _run_arch_grep(term: str) -> str | None:
-    """Run arch-query grep to find components by any term (handles renames, aliases)."""
-    if not ARCH_QUERY.exists() or not ARCH_CONTEXT.exists():
+def _run_arch_query(component: str, version: str | None = None) -> str | None:
+    return _arch_query_cmd(["component", component], version)
+
+
+def _run_arch_query_raw(command: str, version: str | None = None) -> str | None:
+    return _arch_query_cmd([command, "-o", "raw"], version)
+
+
+def _run_arch_grep(term: str, version: str | None = None) -> str | None:
+    return _arch_query_cmd(["grep", term], version)
+
+
+RAW_ARCH_DIR = ROOT / "var" / "checkouts" / "architecture-context" / "architecture" / "rhoai-3.5-ea.1"
+
+
+def _get_raw_arch_docs(claim_text: str, evidence: "EvidenceResult") -> str | None:
+    """Read raw architecture markdown files for components mentioned in the claim.
+
+    Reads the full .md files from the architecture-context checkout.
+    Updates evidence.file_sources and evidence.arch_queries with specific files used.
+    """
+    if not RAW_ARCH_DIR.exists():
         return None
-    try:
-        import subprocess
-        result = subprocess.run(
-            [str(ARCH_QUERY), "--base-dir", str(ARCH_CONTEXT), "grep", term],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout[:15000]
-    except Exception:
-        pass
-    return None
+
+    components = _extract_component_names(claim_text)
+    if not components:
+        return None
+
+    texts = []
+    for comp in components[:3]:
+        md_path = RAW_ARCH_DIR / f"{comp}.md"
+        if not md_path.exists():
+            continue
+        content = md_path.read_text(errors="replace")
+        if len(content) > 15000:
+            content = content[:15000] + "\n[truncated]"
+        rel_path = f"var/checkouts/architecture-context/architecture/rhoai-3.5-ea.1/{comp}.md"
+        evidence.file_sources.append(rel_path)
+        evidence.arch_queries.append(f"raw-doc:{comp}.md")
+        texts.append(f"--- Raw Architecture Doc: {comp}.md (rhoai-3.5-ea.1) ---\n{content}")
+
+    # Also check PLATFORM.md for platform-level claims
+    platform_keywords = ["platform", "ships", "container image", "PLATFORM.md"]
+    if any(kw.lower() in claim_text.lower() for kw in platform_keywords):
+        platform_path = RAW_ARCH_DIR / "PLATFORM.md"
+        if platform_path.exists():
+            content = platform_path.read_text(errors="replace")
+            if len(content) > 15000:
+                content = content[:15000] + "\n[truncated]"
+            evidence.file_sources.append("var/checkouts/architecture-context/architecture/rhoai-3.5-ea.1/PLATFORM.md")
+            evidence.arch_queries.append("raw-doc:PLATFORM.md")
+            texts.append(f"--- Raw Architecture Doc: PLATFORM.md (rhoai-3.5-ea.1) ---\n{content}")
+
+    if not texts:
+        return None
+
+    return "\n\n".join(texts)
 
 
 _overlays_cache: str | None = None
@@ -294,47 +348,67 @@ def find_source_material(source_file: str, claim_text: str = "", claim_type: str
 
     # Architecture context for architectural/security claims
     if claim_type in ("architectural", "security"):
+        # Detect RHOAI version from claim text and source file path
+        version = _detect_version(claim_text)
+        if not version:
+            # Try to detect from source file content (first few source files)
+            for p in sources[:2]:
+                try:
+                    sample = p.read_text(errors="replace")[:2000]
+                    version = _detect_version(sample)
+                    if version:
+                        break
+                except Exception:
+                    pass
+        # Default to current GA if no version detected
+        if not version:
+            version = "rhoai-3.4"
+
+        version_label = f" (version={version})"
+
         components = _extract_component_names(claim_text)
         queried_components: set[str] = set()
 
         for comp in components[:3]:
-            arch_data = _run_arch_query(comp)
+            arch_data = _run_arch_query(comp, version)
             if arch_data:
-                result.arch_queries.append(f"component {comp}")
+                result.arch_queries.append(f"component {comp}{version_label}")
                 queried_components.add(comp)
-                texts.append(f"--- Architecture Context: {comp} (via arch-query component) ---\n{arch_data}")
+                texts.append(f"--- Architecture Context: {comp}{version_label} (via arch-query) ---\n{arch_data}")
 
         # Grep for terms that didn't resolve as component names
-        # Also grep for aliases/renames that arch-query handles via deep search
         grep_terms: set[str] = set()
         for alias in _component_aliases:
             if alias in claim_text.lower() and _component_aliases[alias] not in queried_components:
                 grep_terms.add(alias)
 
-        # Extract other key terms (port numbers, specific tech)
-        import re
         for m in re.finditer(r'\b(OGX|port \d+|mTLS|FIPS|certifi|kube-rbac-proxy|NetworkPolicy)\b', claim_text, re.IGNORECASE):
             grep_terms.add(m.group(0))
 
         for term in list(grep_terms)[:3]:
-            grep_data = _run_arch_grep(term)
+            grep_data = _run_arch_grep(term, version)
             if grep_data:
-                result.arch_queries.append(f"grep {term}")
-                texts.append(f"--- Architecture Search: '{term}' (via arch-query grep) ---\n{grep_data}")
+                result.arch_queries.append(f"grep {term}{version_label}")
+                texts.append(f"--- Architecture Search: '{term}'{version_label} (via arch-query grep) ---\n{grep_data}")
 
-        # Platform summary for platform-level claims (image counts, component counts, etc.)
+        # Platform summary for platform-level claims
         platform_keywords = ["platform", "ships", "container image", "component", "PLATFORM.md"]
         if any(kw.lower() in claim_text.lower() for kw in platform_keywords):
-            platform_data = _run_arch_query_raw("platform")
+            platform_data = _run_arch_query_raw("platform", version)
             if platform_data:
-                result.arch_queries.append("platform -o raw")
-                texts.append(f"--- Platform Summary (via arch-query platform) ---\n{platform_data}")
+                result.arch_queries.append(f"platform -o raw{version_label}")
+                texts.append(f"--- Platform Summary{version_label} (via arch-query platform) ---\n{platform_data}")
 
         # Include overlays for naming/renaming context and recent changes
         overlays = _get_arch_overlays()
         if overlays:
             result.arch_queries.append("overlays")
             texts.append(f"--- Architecture Overlays (active) ---\n{overlays}")
+
+        # Raw architecture docs — full component markdown from checkout
+        raw_docs = _get_raw_arch_docs(claim_text, result)
+        if raw_docs:
+            texts.append(raw_docs)
 
     if texts:
         combined = "\n\n".join(texts)
@@ -390,7 +464,6 @@ def verify_claim(client: AnthropicVertex, claim_text: str, source_material: str,
 
         # Last resort: try fixing common issues (unescaped newlines in strings)
         try:
-            import re
             fixed = re.sub(r'(?<!\\)\n', '\\n', content[start:end] if start >= 0 else content)
             result = json.loads(fixed)
             result["_model_used"] = use_model
@@ -425,7 +498,6 @@ def _write_verification_log(
     summary = verdict_result.get("evidence_summary", "") if verdict_result else "Verification failed"
     quote = verdict_result.get("evidence_quote") if verdict_result else None
     model_used = verdict_result.get("_model_used", MODEL) if verdict_result else "none"
-
     lines = [
         f"# Claim {claim_id}",
         "",
@@ -451,8 +523,11 @@ def _write_verification_log(
 
     if evidence.arch_queries:
         lines.append("### Architecture Queries")
-        for comp in evidence.arch_queries:
-            lines.append(f"- `arch-query component {comp}`")
+        for q in evidence.arch_queries:
+            if q.startswith("arch-query") or q.startswith("raw-doc:"):
+                lines.append(f"- `{q}`")
+            else:
+                lines.append(f"- `arch-query {q}`")
         lines.append("")
 
     if not evidence.file_sources and not evidence.arch_queries:
@@ -477,10 +552,33 @@ def _write_verification_log(
 
 def process_claim(args_tuple: tuple) -> None:
     """Worker function for thread pool."""
-    client, claim_id, claim_text, claim_type, source_file = args_tuple
+    client, claim_id, claim_text, claim_type, source_files_str = args_tuple
     global _verified, _failed
 
-    evidence = find_source_material(source_file, claim_text, claim_type)
+    # Gather evidence from all source files for this claim
+    source_files = source_files_str.split(",") if source_files_str else []
+    evidence = EvidenceResult()
+    for sf in source_files:
+        sf = sf.strip()
+        if not sf:
+            continue
+        partial = find_source_material(sf, claim_text, claim_type)
+        # Merge evidence
+        evidence.file_sources.extend(partial.file_sources)
+        evidence.arch_queries.extend(partial.arch_queries)
+        if partial.combined_text:
+            if evidence.combined_text:
+                evidence.combined_text += "\n\n" + partial.combined_text
+            else:
+                evidence.combined_text = partial.combined_text
+
+    # Deduplicate
+    evidence.file_sources = list(dict.fromkeys(evidence.file_sources))
+    evidence.arch_queries = list(dict.fromkeys(evidence.arch_queries))
+    if len(evidence.combined_text) > 50000:
+        evidence.combined_text = evidence.combined_text[:50000] + "\n[truncated]"
+
+    source_file = source_files[0] if source_files else "unknown"
     if not evidence.has_evidence:
         _write_verification_log(claim_id, claim_text, claim_type, source_file, evidence, None)
         return
@@ -514,6 +612,8 @@ def process_claim(args_tuple: tuple) -> None:
     evidence_source_str = f"llm-judge({model_used})"
     if evidence.arch_queries:
         evidence_source_str = f"llm-judge({model_used})+arch-query"
+    if any(q.startswith("raw-doc:") for q in evidence.arch_queries):
+        evidence_source_str += "+raw-arch-docs"
 
     with _db_lock:
         db = sqlite3.connect(DB_PATH)
@@ -530,20 +630,266 @@ def process_claim(args_tuple: tuple) -> None:
     log.info("Claim %d: %s (confidence=%d) — %s", claim_id, verdict, confidence, claim_text[:80])
 
 
+CLAUDE_BIN = os.environ.get("CLAUDE_BIN", os.path.expanduser("~/.local/bin/claude"))
+SKILL_FILE = ROOT / ".claude" / "skills" / "verify-claim" / "SKILL.md"
+
+CLAUDE_ENV = {
+    "CLAUDE_CODE_USE_VERTEX": "1",
+    "CLOUD_ML_REGION": os.environ.get("CLOUD_ML_REGION", "global"),
+    "ANTHROPIC_VERTEX_PROJECT_ID": os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID", PROJECT_ID),
+}
+
+
+def find_warmup_evidence(source_file: str, claim_text: str = "", claim_type: str = "") -> EvidenceResult:
+    """Gather file-based evidence only (no arch-query). Used in agentic mode."""
+    result = EvidenceResult()
+    source_path = ARTIFACTS / source_file
+    if not source_path.exists():
+        return result
+
+    parent = source_path.parent
+    sources = []
+
+    for pattern in ["*-strat-text.md", "*-threat-surface.md"]:
+        for p in parent.glob(pattern):
+            if p != source_path:
+                sources.append(p)
+        for p in parent.parent.rglob(pattern):
+            if p != source_path:
+                sources.append(p)
+
+    originals_dir = parent.parent / "strat-originals"
+    if originals_dir.exists():
+        for p in originals_dir.glob("*.md"):
+            sources.append(p)
+
+    nfr_checklist = ROOT / "var" / "definitions" / "strat-security-reviews" / "source-repo" / ".claude" / "skills" / "strat-security-review" / "references" / "nfr-checklist.md"
+    if nfr_checklist.exists():
+        sources.append(nfr_checklist)
+
+    texts = []
+    seen_paths: set[str] = set()
+    for p in sources[:5]:
+        if str(p) in seen_paths:
+            continue
+        seen_paths.add(str(p))
+        result.file_sources.append(str(p.relative_to(ROOT)))
+        text = p.read_text(errors="replace")
+        if len(text) > 20000:
+            text = text[:20000] + "\n[truncated]"
+        texts.append(f"--- Source: {p.name} ---\n{text}")
+
+    if texts:
+        combined = "\n\n".join(texts)
+        if len(combined) > 50000:
+            combined = combined[:50000] + "\n[truncated]"
+        result.combined_text = combined
+
+    return result
+
+
+CODEX_BIN = os.environ.get("CODEX_BIN", "codex")
+VERDICT_SCHEMA = ROOT / "var" / "verification" / "verdict-schema.json"
+
+
+def process_claim_agentic(args_tuple: tuple) -> None:
+    """Worker function for agentic verification via Claude Code or Codex."""
+    claim_id, claim_text, claim_type, source_files_str, agentic_model, engine = args_tuple
+    global _verified, _failed
+
+    source_files = source_files_str.split(",") if source_files_str else []
+    evidence = EvidenceResult()
+    for sf in source_files:
+        sf = sf.strip()
+        if not sf:
+            continue
+        partial = find_warmup_evidence(sf, claim_text, claim_type)
+        evidence.file_sources.extend(partial.file_sources)
+        if partial.combined_text:
+            if evidence.combined_text:
+                evidence.combined_text += "\n\n" + partial.combined_text
+            else:
+                evidence.combined_text = partial.combined_text
+
+    evidence.file_sources = list(dict.fromkeys(evidence.file_sources))
+    if len(evidence.combined_text) > 50000:
+        evidence.combined_text = evidence.combined_text[:50000] + "\n[truncated]"
+
+    source_file = source_files[0] if source_files else "unknown"
+
+    # Write claim input to an isolated directory so concurrent workers don't interfere
+    input_dir = ROOT / "var" / "verification" / "pending" / str(claim_id)
+    input_dir.mkdir(parents=True, exist_ok=True)
+    input_path = input_dir / f"{claim_id}.json"
+
+    claim_input = {
+        "claim_id": claim_id,
+        "claim_text": claim_text,
+        "claim_type": claim_type or "",
+        "warmup_evidence": evidence.combined_text or "",
+        "source_files": source_files,
+    }
+    input_path.write_text(json.dumps(claim_input, indent=2))
+
+    try:
+        if engine == "codex":
+            prompt = f"$verify-claim {claim_id}"
+            output_path = input_dir / "codex-output.json"
+            cmd = [
+                CODEX_BIN, "exec",
+                prompt,
+                "--sandbox", "read-only",
+                "--output-schema", str(VERDICT_SCHEMA),
+                "--output-last-message", str(output_path),
+            ]
+            if agentic_model not in ("sonnet", "opus"):
+                cmd.extend(["-m", agentic_model])
+            else:
+                agentic_model = "gpt-5.5"
+            proc_env = dict(os.environ)
+        else:
+            prompt = f"/verify-claim {claim_id}"
+            cmd = [
+                CLAUDE_BIN,
+                "-p", prompt,
+                "--model", agentic_model,
+                "--effort", "medium",
+                "--output-format", "json",
+                "--no-session-persistence",
+                "--allowedTools", "Bash,Read,Grep,Skill",
+                "--dangerously-skip-permissions",
+            ]
+            proc_env = {**os.environ, **CLAUDE_ENV}
+            skill_content = None
+
+        log.info("Claim %d: starting agentic verification (%s)", claim_id, engine)
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=180, cwd=str(ROOT),
+            env=proc_env, input="",
+        )
+
+        if proc.returncode != 0:
+            log.warning("Claim %d: %s exited %d — stderr: %s", claim_id, engine, proc.returncode, proc.stderr[:500])
+            with _db_lock:
+                _failed += 1
+            _write_verification_log(claim_id, claim_text, claim_type, source_file, evidence, None)
+            return
+
+        # Parse the JSON output from the agent. Codex stdout includes run logs, so prefer
+        # the final-message file when available.
+        if engine == "codex" and output_path.exists():
+            output = output_path.read_text().strip()
+        else:
+            output = proc.stdout.strip()
+        result = None
+        try:
+            parsed = json.loads(output)
+            # --output-format json wraps in {"type":"result","result":...}
+            if isinstance(parsed, dict) and "result" in parsed:
+                result_text = parsed["result"]
+            else:
+                result_text = output
+        except json.JSONDecodeError:
+            result_text = output
+
+        # Extract the verdict JSON from the result text
+        if isinstance(result_text, str):
+            # Try to find JSON in the result
+            try:
+                result = json.loads(result_text)
+            except json.JSONDecodeError:
+                start = result_text.find("{")
+                end = result_text.rfind("}") + 1
+                if start >= 0 and end > start:
+                    try:
+                        result = json.loads(result_text[start:end])
+                    except json.JSONDecodeError:
+                        pass
+        elif isinstance(result_text, dict):
+            result = result_text
+
+        if not result or "verdict" not in result:
+            log.warning("Claim %d: could not parse verdict from output: %s", claim_id, (result_text or "")[:200])
+            with _db_lock:
+                _failed += 1
+            _write_verification_log(claim_id, claim_text, claim_type, source_file, evidence, None)
+            return
+
+        # Record tools used in the evidence result
+        tools_used = result.get("tools_used", [])
+        evidence.arch_queries.extend(tools_used)
+
+        verdict = result.get("verdict", "inconclusive")
+        confidence = result.get("confidence", 0)
+        evidence_summary = result.get("evidence_summary", "")
+        evidence_quote = result.get("evidence_quote")
+        root_cause = result.get("root_cause")
+
+        tool_count = len(tools_used)
+        evidence_source_str = f"agentic({engine}:{agentic_model},{tool_count} tool calls)"
+
+        # Include root cause in evidence detail
+        detail_parts = []
+        if evidence_quote:
+            detail_parts.append(evidence_quote)
+        if root_cause:
+            detail_parts.append(f"root_cause: {root_cause}")
+        evidence_detail = " | ".join(detail_parts) if detail_parts else evidence_quote
+
+        with _db_lock:
+            db = sqlite3.connect(DB_PATH)
+            db.execute(
+                """INSERT INTO claim_verdicts
+                    (claim_id, verdict, confidence, evidence_summary, evidence_source, evidence_detail)
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                (claim_id, verdict, confidence, evidence_summary, evidence_source_str, evidence_detail),
+            )
+            db.commit()
+            db.close()
+            _verified += 1
+
+        result["_model_used"] = f"agentic({engine}:{agentic_model})"
+        _write_verification_log(claim_id, claim_text, claim_type, source_file, evidence, result)
+        log.info("Claim %d: %s (confidence=%d, %d tools) — %s", claim_id, verdict, confidence, tool_count, claim_text[:80])
+
+    except subprocess.TimeoutExpired:
+        log.warning("Claim %d: agentic verification timed out after 120s", claim_id)
+        with _db_lock:
+            _failed += 1
+    except Exception as exc:
+        log.error("Claim %d: agentic error: %s", claim_id, exc)
+        with _db_lock:
+            _failed += 1
+    finally:
+        try:
+            shutil.rmtree(input_dir, ignore_errors=True)
+        except OSError:
+            pass
+
+
 def main():
     parser = argparse.ArgumentParser(description="Verify claims against source material")
     parser.add_argument("--limit", type=int, default=0, help="Max claims to verify (0=all pending)")
+    parser.add_argument("--claim", type=int, help="Verify a single claim by ID (re-verifies even if already done)")
     parser.add_argument("--type", type=str, action="append", help="Verify only claims of this type (repeatable, e.g. --type security --type architectural)")
     parser.add_argument("--jira", type=str, help="Verify claims for a specific Jira key")
-    parser.add_argument("--workers", type=int, default=3, help="Concurrent workers (default: 3)")
+    parser.add_argument("--workers", type=int, default=None, help="Concurrent workers (default: 5 deterministic, 3 agentic)")
+    parser.add_argument("--mode", choices=["deterministic", "agentic", "agentic-retry"],
+                        default="deterministic", help="Evidence gathering mode (default: deterministic)")
+    parser.add_argument("--agentic-model", default="sonnet", help="Model for agentic mode (default: sonnet)")
+    parser.add_argument("--engine", choices=["claude", "codex"], default="claude",
+                        help="Agent engine for agentic mode (default: claude)")
     args = parser.parse_args()
+
+    if args.workers is None:
+        args.workers = 3 if args.mode.startswith("agentic") else 5
 
     log.info("Using Vertex AI project=%s region=%s model=%s workers=%d", PROJECT_ID, REGION, MODEL, args.workers)
 
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
 
-    # Find unverified claims with source files
+    # Find claims to verify
     where_extra = ""
     extra_params: list = []
 
@@ -552,24 +898,75 @@ def main():
         where_extra += f" AND c.claim_type IN ({placeholders})"
         extra_params.extend(args.type)
 
-    if args.jira:
+    if args.claim:
+        # Single claim — always re-verify (delete existing verdict first)
+        db.execute("DELETE FROM claim_verdicts WHERE claim_id = ?", (args.claim,))
+        db.commit()
         query = f"""
-            SELECT DISTINCT c.id, c.claim_text, c.claim_type, cs.source_file
+            SELECT c.id, c.claim_text, c.claim_type,
+                GROUP_CONCAT(DISTINCT cs.source_file) as source_files
+            FROM claims c
+            JOIN claim_sources cs ON cs.claim_id = c.id
+            WHERE c.id = ?
+            GROUP BY c.id
+        """
+        rows = db.execute(query, (args.claim,)).fetchall()
+        db.close()
+        if not rows:
+            log.error("Claim %d not found", args.claim)
+            return
+        log.info("Re-verifying claim %d (mode=%s)", args.claim, args.mode)
+        row = rows[0]
+        if args.mode.startswith("agentic"):
+            process_claim_agentic((row["id"], row["claim_text"], row["claim_type"] or "", row["source_files"], args.agentic_model, args.engine))
+        else:
+            client = get_client()
+            process_claim((client, row["id"], row["claim_text"], row["claim_type"] or "", row["source_files"]))
+        log.info("Done.")
+        return
+
+    if args.mode == "agentic-retry":
+        # Re-verify claims that got insufficient or inconclusive verdicts
+        # Delete existing verdicts so they can be re-verified
+        query = f"""
+            SELECT c.id, c.claim_text, c.claim_type,
+                GROUP_CONCAT(DISTINCT cs.source_file) as source_files
+            FROM claims c
+            JOIN claim_sources cs ON cs.claim_id = c.id
+            JOIN claim_verdicts cv ON cv.claim_id = c.id
+            WHERE cv.verdict IN ('insufficient', 'inconclusive')
+            AND c.claim_type IN ('architectural', 'security')
+            {where_extra}
+            GROUP BY c.id
+            ORDER BY c.id DESC
+        """
+        rows = db.execute(query, extra_params).fetchall()
+        # Delete existing verdicts for these claims so we can re-verify
+        for r in rows:
+            db.execute("DELETE FROM claim_verdicts WHERE claim_id = ?", (r["id"],))
+        db.commit()
+    elif args.jira:
+        query = f"""
+            SELECT c.id, c.claim_text, c.claim_type,
+                GROUP_CONCAT(DISTINCT cs.source_file) as source_files
             FROM claims c
             JOIN claim_sources cs ON cs.claim_id = c.id
             JOIN claim_jira_keys jk ON jk.claim_id = c.id
             WHERE jk.jira_key = ? AND c.id NOT IN (SELECT claim_id FROM claim_verdicts)
             {where_extra}
+            GROUP BY c.id
             ORDER BY c.id DESC
         """
         rows = db.execute(query, (args.jira, *extra_params)).fetchall()
     else:
         query = f"""
-            SELECT DISTINCT c.id, c.claim_text, c.claim_type, cs.source_file
+            SELECT c.id, c.claim_text, c.claim_type,
+                GROUP_CONCAT(DISTINCT cs.source_file) as source_files
             FROM claims c
             JOIN claim_sources cs ON cs.claim_id = c.id
             WHERE c.id NOT IN (SELECT claim_id FROM claim_verdicts)
             {where_extra}
+            GROUP BY c.id
             ORDER BY c.id DESC
         """
         rows = db.execute(query, extra_params).fetchall()
@@ -583,14 +980,20 @@ def main():
         log.info("No pending claims to verify")
         return
 
+    use_agentic = args.mode.startswith("agentic")
     arch_status = "available" if ARCH_QUERY.exists() and ARCH_CONTEXT.exists() else "not available"
-    log.info("Verifying %d claims (arch-query: %s)", len(rows), arch_status)
+    log.info("Verifying %d claims (mode=%s, arch-query: %s, workers: %d)",
+             len(rows), args.mode, arch_status, args.workers)
 
-    client = get_client()
-    work_items = [(client, r["id"], r["claim_text"], r["claim_type"] or "", r["source_file"]) for r in rows]
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
-        pool.map(process_claim, work_items)
+    if use_agentic:
+        work_items = [(r["id"], r["claim_text"], r["claim_type"] or "", r["source_files"], args.agentic_model, args.engine) for r in rows]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
+            pool.map(process_claim_agentic, work_items)
+    else:
+        client = get_client()
+        work_items = [(client, r["id"], r["claim_text"], r["claim_type"] or "", r["source_files"]) for r in rows]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
+            pool.map(process_claim, work_items)
 
     log.info("Done. Verified %d claims, %d failed.", _verified, _failed)
 

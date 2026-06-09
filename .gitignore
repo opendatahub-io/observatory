@@ -32,8 +32,9 @@ raw-creds.md
 .DS_Store
 Thumbs.db
 
-# Claude
-.claude/
+# Claude (ignore all except skills)
+.claude/*
+!.claude/skills/
 
 # Reference materials (local copies, cited in README)
 docs/references/
