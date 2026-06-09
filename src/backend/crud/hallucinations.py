@@ -55,6 +55,7 @@ async def get_claims(
     verdict: str | None = None,
     jira_key: str | None = None,
     search: str | None = None,
+    source: str | None = None,
     sort: str | None = None,
     sort_dir: str | None = None,
     limit: int = 50,
@@ -73,9 +74,16 @@ async def get_claims(
         placeholders = ",".join("?" for _ in exclude_types)
         where.append(f"c.claim_type NOT IN ({placeholders})")
         params.extend(exclude_types)
+    if source:
+        where.append("cs.source_file LIKE ?")
+        params.append(f"%{source}%")
     if search:
-        where.append("c.claim_text LIKE ?")
-        params.append(f"%{search}%")
+        if search.isdigit():
+            where.append("c.id = ?")
+            params.append(int(search))
+        else:
+            where.append("c.claim_text LIKE ?")
+            params.append(f"%{search}%")
     if jira_key:
         where.append("c.id IN (SELECT claim_id FROM claim_jira_keys WHERE jira_key = ?)")
         params.append(jira_key)
@@ -192,6 +200,51 @@ async def get_pipeline_hallucination_summary(db: aiosqlite.Connection, pipeline_
         "refuted": refuted,
         "pending": total - supported - refuted,
     }
+
+
+async def get_issues_by_verdicts(
+    db: aiosqlite.Connection,
+    sort: str | None = None,
+    sort_dir: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """Aggregate claims by Jira issue, sorted by verdict counts."""
+    count_cursor = await db.execute(
+        "SELECT COUNT(DISTINCT jira_key) FROM claim_jira_keys"
+    )
+    total = (await count_cursor.fetchone())[0]
+
+    sort_map = {
+        "jira_key": "jk.jira_key",
+        "total": "total_claims",
+        "supported": "supported",
+        "refuted": "refuted",
+        "insufficient": "insufficient",
+        "inconclusive": "inconclusive",
+        "pending": "pending",
+    }
+    order_col = sort_map.get(sort or "", "refuted")
+    order_dir = "DESC" if sort_dir != "asc" else "ASC"
+
+    cursor = await db.execute(f"""
+        SELECT
+            jk.jira_key,
+            COUNT(DISTINCT jk.claim_id) as total_claims,
+            COUNT(DISTINCT CASE WHEN cv.verdict = 'supported' THEN jk.claim_id END) as supported,
+            COUNT(DISTINCT CASE WHEN cv.verdict = 'refuted' THEN jk.claim_id END) as refuted,
+            COUNT(DISTINCT CASE WHEN cv.verdict = 'insufficient' THEN jk.claim_id END) as insufficient,
+            COUNT(DISTINCT CASE WHEN cv.verdict = 'inconclusive' THEN jk.claim_id END) as inconclusive,
+            COUNT(DISTINCT CASE WHEN cv.claim_id IS NULL THEN jk.claim_id END) as pending
+        FROM claim_jira_keys jk
+        LEFT JOIN claim_verdicts cv ON cv.claim_id = jk.claim_id
+        GROUP BY jk.jira_key
+        ORDER BY {order_col} {order_dir}
+        LIMIT ? OFFSET ?
+    """, (limit, offset))
+
+    issues = [dict(r) for r in await cursor.fetchall()]
+    return {"issues": issues, "total": total}
 
 
 async def get_jira_key_claims(db: aiosqlite.Connection, jira_key: str) -> list[dict]:

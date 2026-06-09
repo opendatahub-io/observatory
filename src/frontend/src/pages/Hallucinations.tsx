@@ -58,7 +58,35 @@ const TYPE_CLASSES: Record<string, string> = {
   attribution: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
 };
 
+interface IssueRow {
+  jira_key: string;
+  total_claims: number;
+  supported: number;
+  refuted: number;
+  insufficient: number;
+  inconclusive: number;
+  pending: number;
+}
+
+function renderMarkdown(md: string): string {
+  return md
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/^### (.+)$/gm, '<h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mt-4 mb-1">$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2 class="text-base font-semibold text-gray-900 dark:text-gray-100 mt-5 mb-1 pb-1 border-b border-gray-200 dark:border-gray-700">$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1 class="text-lg font-bold text-gray-900 dark:text-gray-100 mb-2">$1</h1>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong class="font-semibold text-gray-900 dark:text-gray-100">$1</strong>')
+    .replace(/^&gt; (.+)$/gm, '<blockquote class="pl-3 border-l-2 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 italic my-1">$1</blockquote>')
+    .replace(/^- `(.+)`$/gm, '<div class="ml-4 text-xs font-mono text-gray-600 dark:text-gray-400 leading-tight">• <code class="bg-gray-100 dark:bg-gray-700 px-1 rounded">$1</code></div>')
+    .replace(/^- (.+)$/gm, '<div class="ml-4 text-sm text-gray-700 dark:text-gray-300 leading-tight">• $1</div>')
+    .replace(/`([^`]+)`/g, '<code class="bg-gray-100 dark:bg-gray-700 text-xs px-1 py-0.5 rounded font-mono">$1</code>')
+    .replace(/  \n/g, "<br/>")
+    .replace(/\n\n/g, '<div class="h-2"></div>')
+    .replace(/\n/g, "");
+}
+
 function Hallucinations() {
+  const [activeTab, setActiveTab] = useState<"claims" | "issues">("claims");
+
   const [summary, setSummary] = useState<Summary | null>(null);
   const [typeBreakdown, setTypeBreakdown] = useState<TypeCount[]>([]);
   const [claims, setClaims] = useState<Claim[]>([]);
@@ -73,12 +101,21 @@ function Hallucinations() {
   const [sourceModalContent, setSourceModalContent] = useState<string | null>(null);
   const [sourceModalPath, setSourceModalPath] = useState<string | null>(null);
 
+  // Issues tab state
+  const [issues, setIssues] = useState<IssueRow[]>([]);
+  const [issuesTotal, setIssuesToal] = useState(0);
+  const [issuesLoading, setIssuesLoading] = useState(false);
+  const [issuesPage, setIssuesPage] = useState(0);
+  const [issuesSort, setIssuesSort] = useState("refuted");
+  const [issuesSortDir, setIssuesSortDir] = useState("desc");
+
   // Filters
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [excludeTypes, setExcludeTypes] = useState<Set<string>>(new Set());
   const [verdictFilter, setVerdictFilter] = useState<string>("all");
   const [jiraFilter, setJiraFilter] = useState<string>("");
   const [searchFilter, setSearchFilter] = useState<string>("");
+  const [sourceFilter, setSourceFilter] = useState<string>("");
   const [page, setPage] = useState(0);
 
   // Sorting
@@ -122,6 +159,7 @@ function Hallucinations() {
       if (verdictFilter !== "all") params.set("verdict", verdictFilter);
       if (jiraFilter.trim()) params.set("jira_key", jiraFilter.trim());
       if (searchFilter.trim()) params.set("search", searchFilter.trim());
+      if (sourceFilter.trim()) params.set("source", sourceFilter.trim());
       params.set("sort", sortField);
       params.set("sort_dir", sortDir);
 
@@ -133,7 +171,7 @@ function Hallucinations() {
       }
     } catch { /* ignore */ }
     finally { setClaimsLoading(false); }
-  }, [page, typeFilter, excludeTypes, verdictFilter, jiraFilter, searchFilter, sortField, sortDir]);
+  }, [page, typeFilter, excludeTypes, verdictFilter, jiraFilter, searchFilter, sourceFilter, sortField, sortDir]);
 
   useEffect(() => {
     setLoading(true);
@@ -157,6 +195,42 @@ function Hallucinations() {
       if (res.ok) setExpandedDetail(await res.json());
     } catch { /* ignore */ }
   };
+
+  // Issues tab
+  const fetchIssues = useCallback(async () => {
+    setIssuesLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set("limit", "50");
+      params.set("offset", String(issuesPage * 50));
+      params.set("sort", issuesSort);
+      params.set("sort_dir", issuesSortDir);
+      const res = await fetch(`/api/hallucinations/issues?${params}`);
+      if (res.ok) {
+        const data = await res.json();
+        setIssues(data.issues ?? []);
+        setIssuesToal(data.total ?? 0);
+      }
+    } catch { /* ignore */ }
+    finally { setIssuesLoading(false); }
+  }, [issuesPage, issuesSort, issuesSortDir]);
+
+  useEffect(() => {
+    if (activeTab === "issues") void fetchIssues();
+  }, [activeTab, fetchIssues]);
+
+  const toggleIssuesSort = (field: string) => {
+    if (issuesSort === field) {
+      setIssuesSortDir((d) => d === "asc" ? "desc" : "asc");
+    } else {
+      setIssuesSort(field);
+      setIssuesSortDir("desc");
+    }
+    setIssuesPage(0);
+  };
+
+  const issuesSortIndicator = (field: string) =>
+    issuesSort === field ? (issuesSortDir === "asc" ? " ▲" : " ▼") : "";
 
   const viewSourceFile = async (path: string) => {
     setSourceModalPath(path);
@@ -194,6 +268,7 @@ function Hallucinations() {
     setVerdictFilter("all");
     setJiraFilter("");
     setSearchFilter("");
+    setSourceFilter("");
     setPage(0);
   };
 
@@ -208,6 +283,7 @@ function Hallucinations() {
       <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-1">Hallucination Detection</h1>
       <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
         Extracted factual claims from pipeline artifacts, verified against source material.
+        Based on <a href="https://aclanthology.org/2025.acl-long.348.pdf" target="_blank" rel="noopener noreferrer" className="text-primary-600 dark:text-primary-400 hover:underline">Claimify</a> (Metropolitansky &amp; Larson, ACL 2025).
       </p>
 
       {/* Summary cards */}
@@ -295,6 +371,78 @@ function Hallucinations() {
         );
       })()}
 
+      {/* Tabs */}
+      <div className="flex border-b border-gray-200 dark:border-gray-700 mb-6">
+        <button
+          onClick={() => setActiveTab("claims")}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${
+            activeTab === "claims" ? "border-primary-600 text-primary-600 dark:text-primary-400" : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700"
+          }`}
+        >By Claim</button>
+        <button
+          onClick={() => setActiveTab("issues")}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${
+            activeTab === "issues" ? "border-primary-600 text-primary-600 dark:text-primary-400" : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700"
+          }`}
+        >By Issue</button>
+      </div>
+
+      {/* === Issues tab === */}
+      {activeTab === "issues" && (
+        <div>
+          {issuesLoading && <div className="text-center py-12 text-gray-500 dark:text-gray-400">Loading issues...</div>}
+          {!issuesLoading && issues.length === 0 && <div className="text-center py-12 text-gray-500 dark:text-gray-400">No issues with claims found.</div>}
+          {!issuesLoading && issues.length > 0 && (
+            <>
+              <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden mb-4">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr>
+                      {([["jira_key", "Issue"], ["total", "Claims"], ["supported", "Supported"], ["refuted", "Refuted"], ["insufficient", "Insufficient"], ["inconclusive", "Inconclusive"], ["pending", "Pending"]] as const).map(([field, label]) => (
+                        <th
+                          key={field}
+                          onClick={() => toggleIssuesSort(field)}
+                          className={`text-left px-4 py-3 font-semibold text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 cursor-pointer hover:text-gray-900 dark:hover:text-gray-100 select-none ${field !== "jira_key" ? "text-right" : ""}`}
+                        >
+                          {label}{issuesSortIndicator(field)}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {issues.map((row) => (
+                      <tr
+                        key={row.jira_key}
+                        className="hover:bg-gray-50 dark:hover:bg-gray-700/30 cursor-pointer"
+                        onClick={() => { setActiveTab("claims"); setJiraFilter(row.jira_key); setPage(0); }}
+                      >
+                        <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-primary-600 dark:text-primary-400 font-mono text-xs">{row.jira_key}</td>
+                        <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-gray-900 dark:text-gray-100 text-right">{row.total_claims}</td>
+                        <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-emerald-600 text-right">{row.supported || "—"}</td>
+                        <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-red-600 font-medium text-right">{row.refuted || "—"}</td>
+                        <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-gray-400 text-right">{row.insufficient || "—"}</td>
+                        <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-amber-600 text-right">{row.inconclusive || "—"}</td>
+                        <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-gray-400 text-right">{row.pending || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {issuesTotal > 50 && (
+                <div className="flex items-center justify-center gap-4">
+                  <button onClick={() => setIssuesPage((p) => Math.max(0, p - 1))} disabled={issuesPage === 0} className="text-sm font-medium px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 disabled:opacity-50 transition-all">Previous</button>
+                  <span className="text-sm text-gray-500 dark:text-gray-400">Page {issuesPage + 1} of {Math.ceil(issuesTotal / 50)}</span>
+                  <button onClick={() => setIssuesPage((p) => p + 1)} disabled={issuesPage >= Math.ceil(issuesTotal / 50) - 1} className="text-sm font-medium px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 disabled:opacity-50 transition-all">Next</button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* === Claims tab === */}
+      {activeTab === "claims" && (<>
+
       {/* Filters */}
       <div className="flex gap-3 flex-wrap items-center mb-4">
         <input
@@ -303,6 +451,14 @@ function Hallucinations() {
           value={searchFilter}
           onChange={(e) => { setSearchFilter(e.target.value); setPage(0); }}
           className="text-sm px-3 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 outline-none focus:border-primary-400 flex-1 min-w-[200px]"
+        />
+
+        <input
+          type="text"
+          placeholder="Source file..."
+          value={sourceFilter}
+          onChange={(e) => { setSourceFilter(e.target.value); setPage(0); }}
+          className="text-sm px-3 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 outline-none focus:border-primary-400 w-[200px]"
         />
 
         <input
@@ -326,7 +482,7 @@ function Hallucinations() {
           <option value="insufficient">Insufficient</option>
         </select>
 
-        {(typeFilter !== "all" || excludeTypes.size > 0 || verdictFilter !== "all" || jiraFilter || searchFilter) && (
+        {(typeFilter !== "all" || excludeTypes.size > 0 || verdictFilter !== "all" || jiraFilter || searchFilter || sourceFilter) && (
           <button onClick={resetFilters} className="text-xs text-primary-600 dark:text-primary-400 hover:underline">
             Clear filters
           </button>
@@ -375,6 +531,7 @@ function Hallucinations() {
                       {expandedClaim === c.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                     </td>
                     <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-gray-900 dark:text-gray-100">
+                      <span className="text-xs text-gray-400 dark:text-gray-600 mr-1.5">#{c.id}</span>
                       {c.claim_text.length > 120 ? c.claim_text.slice(0, 120) + "..." : c.claim_text}
                     </td>
                     <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800">
@@ -554,7 +711,7 @@ function Hallucinations() {
             <div className="flex-1 overflow-auto p-5">
               {!logModalContent && <div className="text-sm text-gray-400">Loading...</div>}
               {logModalContent && (
-                <pre className="text-xs text-gray-800 dark:text-gray-200 font-mono whitespace-pre-wrap break-words leading-relaxed">{logModalContent}</pre>
+                <div className="text-sm text-gray-800 dark:text-gray-200 leading-relaxed" dangerouslySetInnerHTML={{ __html: renderMarkdown(logModalContent) }} />
               )}
             </div>
           </div>
@@ -601,6 +758,8 @@ function Hallucinations() {
           </button>
         </div>
       )}
+
+      </>)}
     </div>
   );
 }

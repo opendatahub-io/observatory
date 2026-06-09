@@ -10,6 +10,7 @@ from backend.crud.hallucinations import (
     get_claim_detail,
     get_pipeline_hallucination_summary,
     get_jira_key_claims,
+    get_issues_by_verdicts,
 )
 from backend.database import get_db
 
@@ -34,6 +35,7 @@ async def list_claims(
     verdict: Optional[str] = Query(default=None),
     jira_key: Optional[str] = Query(default=None),
     search: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
     sort: Optional[str] = Query(default=None),
     sort_dir: Optional[str] = Query(default=None),
     limit: int = Query(default=50, le=200),
@@ -49,6 +51,7 @@ async def list_claims(
         verdict=verdict,
         jira_key=jira_key,
         search=search,
+        source=source,
         sort=sort,
         sort_dir=sort_dir,
         limit=limit,
@@ -63,6 +66,17 @@ async def claim_detail(claim_id: int, db: aiosqlite.Connection = Depends(get_db)
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Claim not found")
     return result
+
+
+@router.get("/hallucinations/issues")
+async def issues_by_verdicts(
+    sort: Optional[str] = Query(default=None),
+    sort_dir: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, le=200),
+    offset: int = Query(default=0),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    return await get_issues_by_verdicts(db, sort=sort, sort_dir=sort_dir, limit=limit, offset=offset)
 
 
 @router.get("/hallucinations/claims/{claim_id}/log")

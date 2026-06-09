@@ -137,6 +137,24 @@
       "addedAt": "2026-05-28T00:00:00Z"
     },
     {
+      "slug": "test-plan-generator",
+      "order": 4,
+      "name": "Test Plan Generator",
+      "group": "Strats",
+      "description": "Generates test plans from strategy documents",
+      "owner": "fmosca",
+      "repo": {
+        "url": "https://gitlab.com/redhat/rhel-ai/agentic-ci/test-plan-generator",
+        "platform": "gitlab"
+      },
+      "jobs": [],
+      "images": [],
+      "skillRepos": [],
+      "sharedLibs": [],
+      "status": "production",
+      "addedAt": "2026-05-28T00:00:00Z"
+    },
+    {
       "slug": "rfe-assessor",
       "order": 1,
       "name": "RFE Assessor Pipeline",
