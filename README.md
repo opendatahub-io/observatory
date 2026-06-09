@@ -22,9 +22,10 @@ Open http://localhost:5173
 
 ## Architecture
 
-- **Backend**: FastAPI + SQLite (aiosqlite) + Alembic migrations
+- **Backend**: FastAPI + SQLite (aiosqlite)
 - **Frontend**: React 18 + TypeScript + Tailwind CSS + Vite
 - **Dev**: Honcho + Procfile for local multi-process dev
+- **Verification**: Claude Code + Codex skills for agentic evidence gathering
 
 ## Data Pipeline
 
@@ -46,19 +47,20 @@ GitLab/GitHub CI
     │
     ├── extract-claims.py          → ./var/claims/ (JSON, via Vertex AI)
     ├── ingest-claims.py           → claims, claim_sources, claim_jira_keys
-    └── verify-claims.py           → claim_verdicts (via Vertex AI + arch-query)
+    └── verify-claims.py           → claim_verdicts
+        ├── --mode deterministic       (Vertex AI SDK, hardcoded evidence)
+        ├── --mode agentic             (Claude Code skill, self-directed evidence)
+        └── --engine codex             (Codex skill, cross-engine comparison)
 ```
+
+Run `make pipeline` to execute all 9 steps in sequence, or `make help` to see all targets.
 
 ## Make Targets
 
 | Target | Description |
 |--------|-------------|
 | `make dev` | Start backend + frontend via Honcho |
-| `make backend` | Start backend only |
-| `make frontend` | Start frontend only |
-| `make seed` | Seed database from org-pulse-config.json |
-| `make test` | Run pytest |
-| `make lint` | Run ruff |
+| `make seed` | Seed database from org-pulse-config.json (needs backend running) |
 | `make collect-artifacts` | Download CI artifacts, data repos, source repos, job traces |
 | `make ingest-definitions` | Parse .gitlab-ci.yml into DB |
 | `make ingest-telemetry` | Parse OTEL cost/token data into DB |
@@ -66,8 +68,24 @@ GitLab/GitHub CI
 | `make ingest-traces` | Load parsed traces + OTEL events into DB |
 | `make extract-claims` | Extract factual claims from artifacts (Vertex AI) |
 | `make ingest-claims` | Load extracted claims into DB |
-| `make verify-claims` | Verify claims against source material (Vertex AI) |
+| `make verify-claims` | Verify claims — deterministic mode (Vertex AI) |
+| `make verify-claims-agentic` | Verify claims — agentic mode (Claude Code skill) |
+| `make verify-claims-retry` | Re-verify insufficient/inconclusive claims agentically |
+| `make pipeline` | Run full 9-step data pipeline |
 | `make clear-verdicts` | Reset verification data for re-run |
+| `make help` | Show all targets |
+
+## Monitored Pipelines
+
+| Pipeline | Group | Description |
+|----------|-------|-------------|
+| rfe-assessor | RFEs | Scores RFE quality against rubric |
+| rfe-autofixer | RFEs | Rewrites RFEs to improve scores |
+| strat-pipeline | Strats | Generates strategy documents from RFEs |
+| strat-security-reviews | Strats | Security reviews of strategy proposals |
+| epic-decomposer | Strats | Decomposes strategies into epics |
+| test-plan-generator | Strats | Generates test plans from strategies |
+| autofix | Bugs | Automated bug fixes |
 
 ## Pages
 
@@ -78,34 +96,60 @@ GitLab/GitHub CI
 | Artifacts | `/artifacts` | Cross-pipeline file browser with content viewer |
 | Telemetry | `/telemetry` | Cost, tokens, run metrics, model dimensions |
 | Provenance | `/provenance` | Package and container inventory |
-| Vulnerabilities | `/vulnerabilities` | Cross-pipeline vulnerability dashboard |
-| Hallucinations | `/hallucinations` | Claim extraction, verification, triage |
+| Hallucinations | `/hallucinations` | Claim verification, triage (By Claim + By Issue tabs) |
 | Traces | `/agent-traces` | Agent execution events, tool usage |
-| Collector | `/collector` | Collector health and log viewer |
-| Admin | `/admin` | Pipeline CRUD, DB health, API keys, credentials |
 
 ## Hallucination Detection
 
-The hallucination detection system extracts verifiable factual claims from AI-generated pipeline outputs, verifies them against source material, and presents results for triage.
+The hallucination detection system extracts verifiable factual claims from AI-generated pipeline outputs, verifies them against architecture documentation, and presents results for triage. See [ADR-0018](docs/decisions/ADR-0018-hallucination-detection.md) and [ADR-0025](docs/decisions/ADR-0025-agentic-evidence-gathering.md).
 
-### Pipeline
+### Three-stage pipeline
 
-1. **Extract** — LLM decomposes artifact markdown into atomic verifiable claims
-2. **Verify** — LLM-as-judge evaluates claims against evidence:
-   - Co-located source text (strat text, RFE originals)
-   - Architecture context via [arch-query](https://github.com/opendatahub-io/architecture-context)
-   - NFR security checklist
-   - Active architecture overlays
-3. **Triage** — UI with search, filters, sortable columns, verification logs
+1. **Extract** — LLM (Claude Sonnet via Vertex AI) decomposes artifact markdown into atomic verifiable claims using the [Claimify](https://arxiv.org/abs/2502.10855) methodology
+2. **Verify** — agentic verification via Claude Code or Codex skill (`.claude/skills/verify-claim/SKILL.md`):
+   - Reads warmup evidence (co-located source text, NFR checklist)
+   - Queries [arch-query](https://github.com/opendatahub-io/architecture-context) for component facts, ports, webhooks, dependencies, CRDs
+   - Reads raw architecture docs with `-o raw` for data flows and deployment topology
+   - Checks overlays for recent architecture changes
+   - Classifies root cause for refuted claims
+3. **Triage** — UI with search, source file filter, type/verdict filters, sortable columns, verification log viewer
+
+### Verification modes
+
+```bash
+# Deterministic: hardcoded evidence gathering, single LLM judge call
+python scripts/verify-claims.py
+
+# Agentic (Claude): skill-driven, LLM decides what to look up
+python scripts/verify-claims.py --mode agentic --agentic-model opus
+
+# Agentic (Codex): same skill, different engine for cross-comparison
+python scripts/verify-claims.py --mode agentic --engine codex
+
+# Re-verify only insufficient/inconclusive claims
+python scripts/verify-claims.py --mode agentic-retry
+
+# Single claim
+python scripts/verify-claims.py --claim 4682 --mode agentic
+```
 
 ### Verdicts
 
-- **Supported** — evidence confirms the claim
-- **Refuted** — evidence contradicts the claim (potential hallucination)
-- **Insufficient** — no relevant evidence found
+- **Supported** — evidence confirms the claim (for proposals: source text describes it)
+- **Refuted** — evidence contradicts the claim (for proposals: reviewer mischaracterized it)
+- **Insufficient** — no relevant evidence found even after tool queries
 - **Inconclusive** — evidence is ambiguous
 
-Uses Claude Sonnet for initial verification with automatic escalation to Claude Opus for low-confidence results.
+### Key findings
+
+The system has surfaced several classes of findings (see [hallucination-findings.md](docs/notes/hallucination-findings.md)):
+
+- **Reviewer hallucinations** — security reviewers inject training knowledge not in source material (fabricated version numbers, invented library details)
+- **Source confusion** — reviewers state proposed features as existing platform facts
+- **NFR checklist gaps** — the human-authored ground truth is imprecise, causing downstream hallucinations
+- **Architecture doc errors** — AI-generated architecture docs contain factual errors (auth chain misattribution)
+- **Compliance findings** — verification discovered spark-operator using CGO_ENABLED=0 (non-FIPS-compliant build flags)
+- **Cross-engine disagreement** — Claude and Codex produce different verdicts on complex architectural claims, useful as a triage signal
 
 ## References
 
@@ -150,6 +194,10 @@ The hallucination detection design draws from these sources:
 | [0019](docs/decisions/ADR-0019-full-otel-event-ingestion.md) | Full OTEL event log ingestion |
 | [0020](docs/decisions/ADR-0020-gitlab-job-trace-collection.md) | GitLab job trace collection |
 | [0021](docs/decisions/ADR-0021-job-trace-parsing.md) | Job trace parsing |
+| [0022](docs/decisions/ADR-0022-single-verdict-per-claim.md) | Single verdict per claim (aggregated evidence) |
+| [0023](docs/decisions/ADR-0023-skip-boilerplate-claims.md) | Skip boilerplate claims during extraction |
+| [0024](docs/decisions/ADR-0024-hallucination-root-cause-tracing.md) | Root cause tracing via execution logs |
+| [0025](docs/decisions/ADR-0025-agentic-evidence-gathering.md) | Agentic evidence gathering via Claude Code/Codex skills |
 
 ## License
 
