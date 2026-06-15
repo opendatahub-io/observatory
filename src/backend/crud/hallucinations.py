@@ -265,25 +265,27 @@ async def get_claim_detail(db: aiosqlite.Connection, claim_id: int) -> dict | No
     claim["jira_keys"] = [r["jira_key"] for r in await cursor.fetchall()]
 
     cursor = await db.execute(
-        "SELECT * FROM claim_verdicts WHERE claim_id = ? ORDER BY verified_at DESC",
+        "SELECT * FROM claim_verdicts WHERE claim_id = ?",
         (claim_id,),
     )
-    claim["verdicts"] = [dict(r) for r in await cursor.fetchall()]
+    verdict_row = await cursor.fetchone()
+    claim["verdict"] = dict(verdict_row) if verdict_row else None
 
     cursor = await db.execute(
-        "SELECT id, category, explanation, sources_used, explained_at FROM claim_explanations WHERE claim_id = ? ORDER BY explained_at DESC",
+        "SELECT id, category, explanation, sources_used, explained_at FROM claim_explanations WHERE claim_id = ?",
         (claim_id,),
     )
-    explanations = []
-    for r in await cursor.fetchall():
-        exp = dict(r)
-        if exp.get("sources_used"):
+    exp_row = await cursor.fetchone()
+    if exp_row:
+        explanation = dict(exp_row)
+        if explanation.get("sources_used"):
             try:
-                exp["sources_used"] = json.loads(exp["sources_used"])
+                explanation["sources_used"] = json.loads(explanation["sources_used"])
             except (json.JSONDecodeError, TypeError):
-                exp["sources_used"] = []
-        explanations.append(exp)
-    claim["explanations"] = explanations
+                explanation["sources_used"] = []
+        claim["explanation"] = explanation
+    else:
+        claim["explanation"] = None
 
     return claim
 

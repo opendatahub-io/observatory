@@ -828,16 +828,11 @@ function Hallucinations() {
                     <span className={`inline-block text-xs font-semibold px-2 py-0.5 rounded-full ${TYPE_CLASSES[(claimDetail.claim_type as string)] ?? "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300"}`}>
                       {claimDetail.claim_type as string}
                     </span>
-                    {(() => {
-                      const firstVerdict = ((claimDetail.verdicts as Array<Record<string, unknown>>) ?? [])[0];
-                      if (!firstVerdict) return null;
-                      const v = firstVerdict.verdict as string;
-                      return (
-                        <span className={`inline-block text-xs font-semibold px-2 py-0.5 rounded-full ${VERDICT_CLASSES[v] ?? ""}`}>
-                          {v}
-                        </span>
-                      );
-                    })()}
+                    {claimDetail.verdict && (
+                      <span className={`inline-block text-xs font-semibold px-2 py-0.5 rounded-full ${VERDICT_CLASSES[(claimDetail.verdict as Record<string, unknown>).verdict as string] ?? ""}`}>
+                        {(claimDetail.verdict as Record<string, unknown>).verdict as string}
+                      </span>
+                    )}
                   </>
                 )}
               </div>
@@ -898,11 +893,12 @@ function Hallucinations() {
 
                     {/* Verdict detail */}
                     <div>
-                      {((claimDetail.verdicts as Array<Record<string, unknown>>) ?? []).length > 0 ? (
-                        <>
-                          <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">Verdict</div>
-                          {(claimDetail.verdicts as Array<Record<string, unknown>>).map((v, i) => (
-                            <div key={i} className="space-y-2">
+                      {claimDetail.verdict ? (() => {
+                        const v = claimDetail.verdict as Record<string, unknown>;
+                        return (
+                          <>
+                            <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">Verdict</div>
+                            <div className="space-y-2">
                               <div className="flex items-center gap-2">
                                 <span className={`inline-block text-xs font-semibold px-2 py-0.5 rounded-full ${VERDICT_CLASSES[v.verdict as string] ?? ""}`}>
                                   {v.verdict as string}
@@ -918,20 +914,21 @@ function Hallucinations() {
                                 </div>
                               ) : null}
                             </div>
-                          ))}
-                        </>
-                      ) : (
+                          </>
+                        );
+                      })() : (
                         <div className="text-xs text-gray-400 dark:text-gray-500">Not yet verified</div>
                       )}
                     </div>
                   </div>
 
                   {/* Explanation */}
-                  {((claimDetail.explanations as Array<Record<string, unknown>>) ?? []).length > 0 && (
-                    <div className="border-t border-gray-200 dark:border-gray-700 pt-5">
-                      <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">Root Cause Explanation</div>
-                      {(claimDetail.explanations as Array<Record<string, unknown>>).map((exp, i) => (
-                        <div key={i} className="bg-gray-50 dark:bg-gray-700/30 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+                  {claimDetail.explanation && (() => {
+                    const exp = claimDetail.explanation as Record<string, unknown>;
+                    return (
+                      <div className="border-t border-gray-200 dark:border-gray-700 pt-5">
+                        <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">Root Cause Explanation</div>
+                        <div className="bg-gray-50 dark:bg-gray-700/30 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
                           <div className="flex items-center gap-2 mb-3">
                             <span className="inline-block text-xs font-medium px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300">
                               {exp.category as string}
@@ -952,9 +949,9 @@ function Hallucinations() {
                             </div>
                           )}
                         </div>
-                      ))}
-                    </div>
-                  )}
+                      </div>
+                    );
+                  })()}
 
                   {/* Verification log */}
                   <div className="border-t border-gray-200 dark:border-gray-700 pt-5">
