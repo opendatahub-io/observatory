@@ -27,6 +27,18 @@ async def purge_old_data(db: aiosqlite.Connection) -> dict:
     )
     counts["telemetry_spans"] = cursor.rowcount
 
+    cursor = await db.execute(
+        "DELETE FROM otel_log_records WHERE created_at < ?",
+        (span_cutoff,),
+    )
+    counts["otel_log_records"] = cursor.rowcount
+
+    cursor = await db.execute(
+        "DELETE FROM otel_metric_points WHERE created_at < ?",
+        (span_cutoff,),
+    )
+    counts["otel_metric_points"] = cursor.rowcount
+
     # Delete run_commands older than 180 days
     cursor = await db.execute(
         "DELETE FROM run_commands WHERE created_at < ?",

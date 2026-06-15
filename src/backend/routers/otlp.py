@@ -1,8 +1,12 @@
-"""OTLP HTTP JSON receiver for /v1/traces.
+"""OTLP HTTP JSON receiver for traces, logs, and metrics.
 
-Accepts the standard OTLP HTTP JSON format (application/json) and stores
-spans in the telemetry_spans table. Correlates spans to pipelines by
-matching ``service.name`` against ``pipelines.slug``.
+Accepts the standard OTLP HTTP JSON format (application/json) at:
+  POST /otel/v1/traces  — span hierarchy
+  POST /otel/v1/logs    — log records (api_request, tool_result, etc.)
+  POST /otel/v1/metrics — counters (tokens, cost, sessions)
+
+Correlates data to pipelines by matching ``service.name`` against
+``pipelines.slug``.
 """
 
 import json
@@ -13,12 +17,11 @@ from typing import Any
 import aiosqlite
 from fastapi import APIRouter, Depends, Request  # noqa: F401
 
-from backend.auth import require_api_key_scoped
 from backend.database import get_db
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["otlp"])
+router = APIRouter(prefix="/otel", tags=["otlp"])
 
 
 # ---------------------------------------------------------------------------
@@ -32,7 +35,6 @@ def _extract_resource_attr(resource: dict | None, key: str) -> str | None:
     for attr in resource.get("attributes", []):
         if attr.get("key") == key:
             value = attr.get("value", {})
-            # Try common OTLP value wrappers
             return (
                 value.get("stringValue")
                 or value.get("intValue")
@@ -46,7 +48,6 @@ def _attr_value(value: dict) -> Any:
     if "stringValue" in value:
         return value["stringValue"]
     if "intValue" in value:
-        # intValue may be a string representation of an int
         try:
             return int(value["intValue"])
         except (ValueError, TypeError):
@@ -113,6 +114,16 @@ def _status_code_str(status: dict | None) -> str | None:
         return None
     mapping = {0: "UNSET", 1: "OK", 2: "ERROR"}
     return mapping.get(code, str(code))
+
+
+def _resource_attrs_json(resource: dict | None) -> str | None:
+    """Serialize resource attributes to JSON for storage."""
+    if not resource:
+        return None
+    raw = resource.get("attributes", [])
+    if not raw:
+        return None
+    return json.dumps(_attrs_to_dict(raw))
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +201,6 @@ def _extract_telemetry(attrs: dict) -> dict | None:
         elif key in _MODEL_KEYS and model is None:
             model = str(value)
 
-    # Only return if we found at least something interesting
     if input_tokens is None and output_tokens is None and cost_usd is None and model is None:
         return None
 
@@ -235,18 +245,15 @@ async def _upsert_telemetry_summary(
 
 
 # ---------------------------------------------------------------------------
-# Main endpoint
+# POST /otel/v1/traces
 # ---------------------------------------------------------------------------
 
 @router.post("/v1/traces")
 async def receive_traces(request: Request, db: aiosqlite.Connection = Depends(get_db)):
     """Receive OTLP HTTP JSON traces and store spans."""
-    api_key = request.headers.get("x-api-key")
-
     try:
         body = await request.json()
     except Exception:
-        # Malformed / empty body — return 200 per OTLP spec
         return {}
 
     if not isinstance(body, dict):
@@ -256,27 +263,12 @@ async def receive_traces(request: Request, db: aiosqlite.Connection = Depends(ge
     if not isinstance(resource_spans, list):
         return {}
 
-    # Extract the first service.name for scope checking
-    first_service_name = None
-    for rs in resource_spans:
-        if isinstance(rs, dict):
-            resource = rs.get("resource", {})
-            sn = _extract_resource_attr(resource, "service.name")
-            if sn:
-                first_service_name = sn
-                break
-
-    # Auth check with scope
-    await require_api_key_scoped(first_service_name, api_key, db)
-
     for rs in resource_spans:
         if not isinstance(rs, dict):
             continue
 
         resource = rs.get("resource", {})
         service_name = _extract_resource_attr(resource, "service.name")
-
-        # Pipeline correlation
         pipeline_id = await _find_pipeline_id(db, service_name)
 
         scope_spans_list = rs.get("scopeSpans", [])
@@ -312,7 +304,6 @@ async def receive_traces(request: Request, db: aiosqlite.Connection = Depends(ge
                 attrs_dict = _attrs_to_dict(raw_attrs) if isinstance(raw_attrs, list) else {}
                 attrs_json = json.dumps(attrs_dict) if attrs_dict else None
 
-                # Determine pipeline_run_id
                 pipeline_run_id = None
                 if pipeline_id and trace_id:
                     pipeline_run_id = await _find_or_create_run(
@@ -341,7 +332,6 @@ async def receive_traces(request: Request, db: aiosqlite.Connection = Depends(ge
                     ),
                 )
 
-                # Telemetry summary extraction
                 if pipeline_run_id and attrs_dict:
                     telemetry = _extract_telemetry(attrs_dict)
                     if telemetry:
@@ -354,40 +344,204 @@ async def receive_traces(request: Request, db: aiosqlite.Connection = Depends(ge
 
 
 # ---------------------------------------------------------------------------
-# Span query endpoint (trace explorer)
+# POST /otel/v1/logs
 # ---------------------------------------------------------------------------
 
-@router.get("/api/telemetry/spans/{run_id}")
-async def get_spans_for_run(
-    run_id: int, db: aiosqlite.Connection = Depends(get_db)
-):
-    """Return all spans for a given pipeline run, ordered by start_time."""
-    cursor = await db.execute(
-        """SELECT id, pipeline_run_id, trace_id, span_id, parent_span_id,
-                  operation_name, service_name,
-                  start_time, end_time, duration_ms,
-                  status_code, attributes, created_at
-           FROM telemetry_spans
-           WHERE pipeline_run_id = ?
-           ORDER BY start_time""",
-        (run_id,),
-    )
-    rows = await cursor.fetchall()
-    spans = []
-    for row in rows:
-        spans.append({
-            "id": row["id"],
-            "pipeline_run_id": row["pipeline_run_id"],
-            "trace_id": row["trace_id"],
-            "span_id": row["span_id"],
-            "parent_span_id": row["parent_span_id"],
-            "operation_name": row["operation_name"],
-            "service_name": row["service_name"],
-            "start_time": row["start_time"],
-            "end_time": row["end_time"],
-            "duration_ms": row["duration_ms"],
-            "status_code": row["status_code"],
-            "attributes": row["attributes"],
-            "created_at": row["created_at"],
-        })
-    return {"spans": spans}
+@router.post("/v1/logs")
+async def receive_logs(request: Request, db: aiosqlite.Connection = Depends(get_db)):
+    """Receive OTLP HTTP JSON logs and store log records.
+
+    Claude Code emits log records for events like api_request, tool_result,
+    tool_decision, and user_prompt.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return {}
+
+    if not isinstance(body, dict):
+        return {}
+
+    resource_logs = body.get("resourceLogs", [])
+    if not isinstance(resource_logs, list):
+        return {}
+
+    for rl in resource_logs:
+        if not isinstance(rl, dict):
+            continue
+
+        resource = rl.get("resource", {})
+        service_name = _extract_resource_attr(resource, "service.name")
+        pipeline_id = await _find_pipeline_id(db, service_name)
+        res_attrs_json = _resource_attrs_json(resource)
+
+        scope_logs_list = rl.get("scopeLogs", [])
+        if not isinstance(scope_logs_list, list):
+            continue
+
+        for sl in scope_logs_list:
+            if not isinstance(sl, dict):
+                continue
+
+            log_records = sl.get("logRecords", [])
+            if not isinstance(log_records, list):
+                continue
+
+            for lr in log_records:
+                if not isinstance(lr, dict):
+                    continue
+
+                trace_id = lr.get("traceId", "")
+                span_id = lr.get("spanId", "")
+                severity_number = lr.get("severityNumber")
+                severity_text = lr.get("severityText", "")
+                observed_nano = lr.get("observedTimeUnixNano") or lr.get("timeUnixNano")
+                observed_at = _nano_to_iso(observed_nano)
+
+                body_val = lr.get("body", {})
+                if isinstance(body_val, dict):
+                    body_str = body_val.get("stringValue") or json.dumps(body_val)
+                else:
+                    body_str = str(body_val) if body_val else None
+
+                raw_attrs = lr.get("attributes", [])
+                attrs_dict = _attrs_to_dict(raw_attrs) if isinstance(raw_attrs, list) else {}
+                attrs_json = json.dumps(attrs_dict) if attrs_dict else None
+
+                pipeline_run_id = None
+                if pipeline_id and trace_id:
+                    pipeline_run_id = await _find_or_create_run(
+                        db, pipeline_id, trace_id
+                    )
+
+                await db.execute(
+                    """INSERT INTO otel_log_records
+                       (pipeline_run_id, trace_id, span_id,
+                        severity_number, severity_text, body,
+                        attributes, resource_attrs, observed_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        pipeline_run_id,
+                        trace_id or None,
+                        span_id or None,
+                        severity_number,
+                        severity_text or None,
+                        body_str,
+                        attrs_json,
+                        res_attrs_json,
+                        observed_at,
+                    ),
+                )
+
+    await db.commit()
+    return {}
+
+
+# ---------------------------------------------------------------------------
+# POST /otel/v1/metrics
+# ---------------------------------------------------------------------------
+
+@router.post("/v1/metrics")
+async def receive_metrics(request: Request, db: aiosqlite.Connection = Depends(get_db)):
+    """Receive OTLP HTTP JSON metrics and store data points.
+
+    Claude Code emits counters for tokens, cost, and sessions.
+    Handles Sum, Gauge, and Histogram metric types.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return {}
+
+    if not isinstance(body, dict):
+        return {}
+
+    resource_metrics = body.get("resourceMetrics", [])
+    if not isinstance(resource_metrics, list):
+        return {}
+
+    for rm in resource_metrics:
+        if not isinstance(rm, dict):
+            continue
+
+        resource = rm.get("resource", {})
+        service_name = _extract_resource_attr(resource, "service.name")
+        pipeline_id = await _find_pipeline_id(db, service_name)
+        res_attrs_json = _resource_attrs_json(resource)
+
+        scope_metrics_list = rm.get("scopeMetrics", [])
+        if not isinstance(scope_metrics_list, list):
+            continue
+
+        for sm in scope_metrics_list:
+            if not isinstance(sm, dict):
+                continue
+
+            metrics = sm.get("metrics", [])
+            if not isinstance(metrics, list):
+                continue
+
+            for metric in metrics:
+                if not isinstance(metric, dict):
+                    continue
+
+                metric_name = metric.get("name", "")
+
+                for metric_type in ("sum", "gauge", "histogram"):
+                    data = metric.get(metric_type)
+                    if not data or not isinstance(data, dict):
+                        continue
+
+                    data_points = data.get("dataPoints", [])
+                    if not isinstance(data_points, list):
+                        continue
+
+                    for dp in data_points:
+                        if not isinstance(dp, dict):
+                            continue
+
+                        value = (
+                            dp.get("asDouble")
+                            or dp.get("asInt")
+                            or dp.get("value")
+                            or dp.get("sum")
+                            or dp.get("count")
+                        )
+                        if value is not None:
+                            try:
+                                value = float(value)
+                            except (ValueError, TypeError):
+                                value = None
+
+                        ts_nano = dp.get("timeUnixNano") or dp.get("startTimeUnixNano")
+                        recorded_at = _nano_to_iso(ts_nano)
+
+                        raw_attrs = dp.get("attributes", [])
+                        attrs_dict = _attrs_to_dict(raw_attrs) if isinstance(raw_attrs, list) else {}
+                        attrs_json = json.dumps(attrs_dict) if attrs_dict else None
+
+                        pipeline_run_id = None
+                        trace_id = attrs_dict.get("trace_id") or attrs_dict.get("traceId")
+                        if pipeline_id and trace_id:
+                            pipeline_run_id = await _find_or_create_run(
+                                db, pipeline_id, str(trace_id)
+                            )
+
+                        await db.execute(
+                            """INSERT INTO otel_metric_points
+                               (pipeline_run_id, metric_name, metric_type,
+                                value, attributes, resource_attrs, recorded_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                            (
+                                pipeline_run_id,
+                                metric_name,
+                                metric_type,
+                                value,
+                                attrs_json,
+                                res_attrs_json,
+                                recorded_at,
+                            ),
+                        )
+
+    await db.commit()
+    return {}

@@ -2,6 +2,7 @@ from typing import Optional
 
 import aiosqlite
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
 
 from backend.crud.hallucinations import (
     get_hallucination_summary,
@@ -11,10 +12,141 @@ from backend.crud.hallucinations import (
     get_pipeline_hallucination_summary,
     get_jira_key_claims,
     get_issues_by_verdicts,
+    ingest_claims,
+    store_verdicts,
+    store_explanations,
+    get_explanations,
+    get_explanation_categories,
+    clear_all_claims,
 )
 from backend.database import get_db
 
 router = APIRouter(prefix="/api", tags=["hallucinations"])
+
+
+class ClaimItem(BaseModel):
+    claim: str
+    type: Optional[str] = None
+    original_text: Optional[str] = None
+
+
+class ClaimIngestRequest(BaseModel):
+    source_file: str
+    pipeline_slug: str
+    claims: list[ClaimItem]
+
+
+class ClaimIngestResponse(BaseModel):
+    ingested: int
+    new: int
+    duplicate: int
+    jira_links: int
+    sources_added: int
+
+
+class VerdictItem(BaseModel):
+    claim_id: int
+    verdict: str
+    confidence: int = 0
+    evidence_summary: Optional[str] = None
+    evidence_source: Optional[str] = None
+    evidence_detail: Optional[str] = None
+
+
+class VerdictStoreRequest(BaseModel):
+    verdicts: list[VerdictItem]
+
+
+class VerdictStoreResponse(BaseModel):
+    stored: int
+    skipped: int
+
+
+class ExplanationSourceItem(BaseModel):
+    type: str
+    path: str
+
+
+class ExplanationItem(BaseModel):
+    claim_id: int
+    category: str
+    explanation: str
+    sources_used: list[ExplanationSourceItem] = []
+
+
+class ExplanationStoreRequest(BaseModel):
+    explanations: list[ExplanationItem]
+
+
+class ExplanationStoreResponse(BaseModel):
+    stored: int
+    skipped: int
+
+
+@router.post("/claims/ingest", response_model=ClaimIngestResponse, status_code=201)
+async def ingest_claims_endpoint(
+    data: ClaimIngestRequest,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    result = await ingest_claims(
+        db,
+        source_file=data.source_file,
+        pipeline_slug=data.pipeline_slug,
+        claims=[c.model_dump() for c in data.claims],
+    )
+    return result
+
+
+@router.post("/claims/verdicts", response_model=VerdictStoreResponse, status_code=201)
+async def store_verdicts_endpoint(
+    data: VerdictStoreRequest,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    result = await store_verdicts(
+        db,
+        verdicts=[v.model_dump() for v in data.verdicts],
+    )
+    return result
+
+
+@router.post("/claims/explanations", response_model=ExplanationStoreResponse, status_code=201)
+async def store_explanations_endpoint(
+    data: ExplanationStoreRequest,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    result = await store_explanations(
+        db,
+        explanations=[e.model_dump() for e in data.explanations],
+    )
+    return result
+
+
+@router.get("/hallucinations/explanations")
+async def list_explanations(
+    category: Optional[str] = Query(default=None),
+    jira_key: Optional[str] = Query(default=None),
+    search: Optional[str] = Query(default=None),
+    sort: Optional[str] = Query(default=None),
+    sort_dir: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, le=200),
+    offset: int = Query(default=0),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    return await get_explanations(
+        db,
+        category=category,
+        jira_key=jira_key,
+        search=search,
+        sort=sort,
+        sort_dir=sort_dir,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/hallucinations/explanations/categories")
+async def explanation_categories(db: aiosqlite.Connection = Depends(get_db)):
+    return await get_explanation_categories(db)
 
 
 @router.get("/hallucinations/summary")
@@ -107,6 +239,12 @@ async def source_file_content(path: str = Query(...)):
 @router.get("/pipelines/{slug}/hallucinations")
 async def pipeline_hallucinations(slug: str, db: aiosqlite.Connection = Depends(get_db)):
     return await get_pipeline_hallucination_summary(db, slug)
+
+
+@router.delete("/hallucinations/all")
+async def delete_all_claims(db: aiosqlite.Connection = Depends(get_db)):
+    counts = await clear_all_claims(db)
+    return counts
 
 
 @router.get("/hallucinations/jira/{jira_key}")

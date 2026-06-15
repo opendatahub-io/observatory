@@ -14,6 +14,7 @@ function getPageTitle(pathname: string): string {
   if (pathname === "/vulnerabilities") return "Vulnerabilities";
   if (pathname === "/hallucinations") return "Hallucinations";
   if (pathname === "/agent-traces") return "Traces";
+  if (pathname === "/otel-explorer") return "OTEL Explorer";
   if (pathname === "/collector") return "Collector";
   if (pathname === "/admin") return "Admin";
   if (pathname.endsWith("/diff")) return "Provenance Diff";

@@ -1,4 +1,100 @@
+import hashlib
+import json
+import re
+
 import aiosqlite
+
+JIRA_KEY_PATTERN = re.compile(r"\b(RHAISTRAT|RHAIRFE|RHOAIENG|AIPCC|INFERENG|RHAIENG)-\d+\b")
+
+
+def _claim_hash(text: str) -> str:
+    """Compute claim hash matching ingest-claims.py normalization."""
+    normalized = " ".join(text.lower().split())
+    normalized = normalized.rstrip(".,;:!?")
+    return hashlib.sha256(normalized.encode()).hexdigest()[:16]
+
+
+def _extract_jira_keys(text: str) -> list[str]:
+    return [m.group(0) for m in JIRA_KEY_PATTERN.finditer(text)]
+
+
+async def ingest_claims(
+    db: aiosqlite.Connection,
+    source_file: str,
+    pipeline_slug: str,
+    claims: list[dict],
+) -> dict:
+    """Ingest a batch of claims, deduplicating by content hash.
+
+    Mirrors the logic in scripts/ingest-claims.py.
+    """
+    total = 0
+    new = 0
+    total_sources = 0
+    total_jira_links = 0
+
+    for claim_data in claims:
+        claim_text = claim_data.get("claim", "").strip()
+        if not claim_text:
+            continue
+
+        total += 1
+        chash = _claim_hash(claim_text)
+        claim_type = claim_data.get("type")
+        original_text = claim_data.get("original_text")
+
+        cursor = await db.execute(
+            "SELECT id FROM claims WHERE claim_hash = ?", (chash,)
+        )
+        existing = await cursor.fetchone()
+
+        if existing:
+            claim_id = existing["id"]
+        else:
+            cursor = await db.execute(
+                "INSERT INTO claims (claim_text, claim_type, claim_hash) VALUES (?, ?, ?)",
+                (claim_text, claim_type, chash),
+            )
+            claim_id = cursor.lastrowid
+            new += 1
+
+        exists = await db.execute(
+            "SELECT id FROM claim_sources WHERE claim_id = ? AND source_file = ?",
+            (claim_id, source_file),
+        )
+        if not await exists.fetchone():
+            await db.execute(
+                "INSERT INTO claim_sources (claim_id, pipeline_slug, source_file, original_text) VALUES (?, ?, ?, ?)",
+                (claim_id, pipeline_slug, source_file, original_text),
+            )
+            total_sources += 1
+
+        jira_keys = set(_extract_jira_keys(claim_text))
+        if original_text:
+            jira_keys.update(_extract_jira_keys(original_text))
+        jira_keys.update(_extract_jira_keys(source_file))
+
+        for jk in jira_keys:
+            exists = await db.execute(
+                "SELECT id FROM claim_jira_keys WHERE claim_id = ? AND jira_key = ?",
+                (claim_id, jk),
+            )
+            if not await exists.fetchone():
+                await db.execute(
+                    "INSERT INTO claim_jira_keys (claim_id, jira_key) VALUES (?, ?)",
+                    (claim_id, jk),
+                )
+                total_jira_links += 1
+
+    await db.commit()
+
+    return {
+        "ingested": total,
+        "new": new,
+        "duplicate": total - new,
+        "jira_links": total_jira_links,
+        "sources_added": total_sources,
+    }
 
 
 async def get_hallucination_summary(db: aiosqlite.Connection) -> dict:
@@ -17,6 +113,9 @@ async def get_hallucination_summary(db: aiosqlite.Connection) -> dict:
     cursor = await db.execute("SELECT COUNT(DISTINCT claim_id) FROM claim_verdicts WHERE verdict = 'inconclusive'")
     inconclusive = (await cursor.fetchone())[0]
 
+    cursor = await db.execute("SELECT COUNT(DISTINCT claim_id) FROM claim_verdicts WHERE verdict = 'insufficient'")
+    insufficient = (await cursor.fetchone())[0]
+
     cursor = await db.execute("SELECT COUNT(DISTINCT jira_key) FROM claim_jira_keys")
     jira_keys = (await cursor.fetchone())[0]
 
@@ -27,6 +126,7 @@ async def get_hallucination_summary(db: aiosqlite.Connection) -> dict:
         "supported": supported,
         "refuted": refuted,
         "inconclusive": inconclusive,
+        "insufficient": insufficient,
         "jira_keys_referenced": jira_keys,
     }
 
@@ -113,7 +213,8 @@ async def get_claims(
         SELECT c.id, c.claim_text, c.claim_type, c.claim_hash, c.first_seen_at,
             (SELECT COUNT(*) FROM claim_jira_keys WHERE claim_id = c.id) as jira_count,
             (SELECT COUNT(*) FROM claim_sources WHERE claim_id = c.id) as source_count,
-            COALESCE((SELECT confidence FROM claim_verdicts WHERE claim_id = c.id ORDER BY verified_at DESC LIMIT 1), -1) as confidence_val
+            COALESCE((SELECT confidence FROM claim_verdicts WHERE claim_id = c.id ORDER BY verified_at DESC LIMIT 1), -1) as confidence_val,
+            (SELECT category FROM claim_explanations WHERE claim_id = c.id ORDER BY explained_at DESC LIMIT 1) as explanation_category
         FROM claims c
         LEFT JOIN claim_sources cs ON cs.claim_id = c.id
         WHERE {where_clause}
@@ -168,6 +269,21 @@ async def get_claim_detail(db: aiosqlite.Connection, claim_id: int) -> dict | No
         (claim_id,),
     )
     claim["verdicts"] = [dict(r) for r in await cursor.fetchall()]
+
+    cursor = await db.execute(
+        "SELECT id, category, explanation, sources_used, explained_at FROM claim_explanations WHERE claim_id = ? ORDER BY explained_at DESC",
+        (claim_id,),
+    )
+    explanations = []
+    for r in await cursor.fetchall():
+        exp = dict(r)
+        if exp.get("sources_used"):
+            try:
+                exp["sources_used"] = json.loads(exp["sources_used"])
+            except (json.JSONDecodeError, TypeError):
+                exp["sources_used"] = []
+        explanations.append(exp)
+    claim["explanations"] = explanations
 
     return claim
 
@@ -247,6 +363,67 @@ async def get_issues_by_verdicts(
     return {"issues": issues, "total": total}
 
 
+async def store_verdicts(
+    db: aiosqlite.Connection,
+    verdicts: list[dict],
+) -> dict:
+    """Store verification verdicts for claims.
+
+    Each verdict dict must have claim_id, verdict, confidence.
+    Optional: evidence_summary, evidence_source, evidence_detail.
+    """
+    stored = 0
+    skipped = 0
+
+    for v in verdicts:
+        claim_id = v.get("claim_id")
+        if not claim_id:
+            skipped += 1
+            continue
+
+        cursor = await db.execute("SELECT id FROM claims WHERE id = ?", (claim_id,))
+        if not await cursor.fetchone():
+            skipped += 1
+            continue
+
+        existing = await db.execute(
+            "SELECT id FROM claim_verdicts WHERE claim_id = ?", (claim_id,)
+        )
+        if await existing.fetchone():
+            await db.execute(
+                """UPDATE claim_verdicts
+                    SET verdict = ?, confidence = ?, evidence_summary = ?,
+                        evidence_source = ?, evidence_detail = ?, verified_at = CURRENT_TIMESTAMP
+                    WHERE claim_id = ?""",
+                (
+                    v.get("verdict", "inconclusive"),
+                    v.get("confidence", 0),
+                    v.get("evidence_summary"),
+                    v.get("evidence_source"),
+                    v.get("evidence_detail"),
+                    claim_id,
+                ),
+            )
+        else:
+            await db.execute(
+                """INSERT INTO claim_verdicts
+                    (claim_id, verdict, confidence, evidence_summary, evidence_source, evidence_detail)
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    claim_id,
+                    v.get("verdict", "inconclusive"),
+                    v.get("confidence", 0),
+                    v.get("evidence_summary"),
+                    v.get("evidence_source"),
+                    v.get("evidence_detail"),
+                ),
+            )
+        stored += 1
+
+    await db.commit()
+    return {"stored": stored, "skipped": skipped}
+
+
 async def get_jira_key_claims(db: aiosqlite.Connection, jira_key: str) -> list[dict]:
     cursor = await db.execute("""
         SELECT c.id, c.claim_text, c.claim_type
@@ -256,3 +433,139 @@ async def get_jira_key_claims(db: aiosqlite.Connection, jira_key: str) -> list[d
         ORDER BY c.id
     """, (jira_key,))
     return [dict(r) for r in await cursor.fetchall()]
+
+
+async def store_explanations(
+    db: aiosqlite.Connection,
+    explanations: list[dict],
+) -> dict:
+    """Store root-cause explanations for claims."""
+    stored = 0
+    skipped = 0
+
+    for e in explanations:
+        claim_id = e.get("claim_id")
+        if not claim_id:
+            skipped += 1
+            continue
+
+        cursor = await db.execute("SELECT id FROM claims WHERE id = ?", (claim_id,))
+        if not await cursor.fetchone():
+            skipped += 1
+            continue
+
+        sources_json = json.dumps(e.get("sources_used", []))
+
+        existing = await db.execute(
+            "SELECT id FROM claim_explanations WHERE claim_id = ?", (claim_id,)
+        )
+        if await existing.fetchone():
+            await db.execute(
+                """UPDATE claim_explanations
+                    SET category = ?, explanation = ?, sources_used = ?, explained_at = CURRENT_TIMESTAMP
+                    WHERE claim_id = ?""",
+                (e.get("category", "unknown"), e.get("explanation", ""), sources_json, claim_id),
+            )
+        else:
+            await db.execute(
+                """INSERT INTO claim_explanations
+                    (claim_id, category, explanation, sources_used)
+                VALUES (?, ?, ?, ?)""",
+                (claim_id, e.get("category", "unknown"), e.get("explanation", ""), sources_json),
+            )
+        stored += 1
+
+    await db.commit()
+    return {"stored": stored, "skipped": skipped}
+
+
+async def get_explanations(
+    db: aiosqlite.Connection,
+    category: str | None = None,
+    jira_key: str | None = None,
+    search: str | None = None,
+    sort: str | None = None,
+    sort_dir: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """List explanations with filters."""
+    where = []
+    params: list = []
+
+    if category:
+        where.append("ce.category = ?")
+        params.append(category)
+    if jira_key:
+        where.append("c.id IN (SELECT claim_id FROM claim_jira_keys WHERE jira_key = ?)")
+        params.append(jira_key)
+    if search:
+        where.append("(ce.explanation LIKE ? OR c.claim_text LIKE ?)")
+        params.extend([f"%{search}%", f"%{search}%"])
+
+    where_clause = " AND ".join(where) if where else "1=1"
+
+    count_sql = f"""
+        SELECT COUNT(DISTINCT ce.id) FROM claim_explanations ce
+        JOIN claims c ON c.id = ce.claim_id
+        WHERE {where_clause}
+    """
+    cursor = await db.execute(count_sql, params)
+    total = (await cursor.fetchone())[0]
+
+    sort_map = {
+        "category": "ce.category",
+        "claim": "c.claim_text",
+        "date": "ce.explained_at",
+    }
+    order_col = sort_map.get(sort or "", "ce.id")
+    order_dir = "DESC" if sort_dir != "asc" else "ASC"
+    if order_col == "ce.id":
+        order_dir = "DESC"
+
+    query_sql = f"""
+        SELECT ce.id, ce.claim_id, ce.category, ce.explanation, ce.sources_used, ce.explained_at,
+            c.claim_text, c.claim_type,
+            (SELECT verdict FROM claim_verdicts WHERE claim_id = c.id ORDER BY verified_at DESC LIMIT 1) as verdict,
+            (SELECT confidence FROM claim_verdicts WHERE claim_id = c.id ORDER BY verified_at DESC LIMIT 1) as confidence
+        FROM claim_explanations ce
+        JOIN claims c ON c.id = ce.claim_id
+        WHERE {where_clause}
+        ORDER BY {order_col} {order_dir}
+        LIMIT ? OFFSET ?
+    """
+    cursor = await db.execute(query_sql, params + [limit, offset])
+    rows = [dict(r) for r in await cursor.fetchall()]
+
+    for row in rows:
+        if row.get("sources_used"):
+            try:
+                row["sources_used"] = json.loads(row["sources_used"])
+            except (json.JSONDecodeError, TypeError):
+                row["sources_used"] = []
+
+        cid = row["claim_id"]
+        cursor = await db.execute("SELECT jira_key FROM claim_jira_keys WHERE claim_id = ?", (cid,))
+        row["jira_keys"] = [r["jira_key"] for r in await cursor.fetchall()]
+
+    return {"explanations": rows, "total": total}
+
+
+async def get_explanation_categories(db: aiosqlite.Connection) -> list[dict]:
+    """Get category distribution for explanations."""
+    cursor = await db.execute(
+        "SELECT category, COUNT(*) as count FROM claim_explanations GROUP BY category ORDER BY count DESC"
+    )
+    return [dict(r) for r in await cursor.fetchall()]
+
+
+async def clear_all_claims(db: aiosqlite.Connection) -> dict:
+    """Delete all claims data (claims, sources, verdicts, explanations, jira keys)."""
+    tables = ["claim_explanations", "claim_verdicts", "claim_jira_keys", "claim_sources", "claims"]
+    counts = {}
+    for table in tables:
+        cursor = await db.execute(f"SELECT COUNT(*) FROM {table}")  # noqa: S608
+        counts[table] = (await cursor.fetchone())[0]
+        await db.execute(f"DELETE FROM {table}")  # noqa: S608
+    await db.commit()
+    return counts

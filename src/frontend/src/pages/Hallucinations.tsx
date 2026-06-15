@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import { ChevronRight, ChevronDown, X } from "lucide-react";
+import { X } from "lucide-react";
 
 interface Summary {
   total_claims: number;
@@ -8,6 +8,7 @@ interface Summary {
   supported: number;
   refuted: number;
   inconclusive: number;
+  insufficient: number;
   jira_keys_referenced: number;
 }
 
@@ -36,6 +37,7 @@ interface Claim {
   jira_keys: string[];
   sources: ClaimSource[];
   verdict: ClaimVerdict | null;
+  explanation_category: string | null;
 }
 
 interface ClaimsResponse {
@@ -85,7 +87,7 @@ function renderMarkdown(md: string): string {
 }
 
 function Hallucinations() {
-  const [activeTab, setActiveTab] = useState<"claims" | "issues">("claims");
+  const [activeTab, setActiveTab] = useState<"claims" | "issues" | "explanations">("claims");
 
   const [summary, setSummary] = useState<Summary | null>(null);
   const [typeBreakdown, setTypeBreakdown] = useState<TypeCount[]>([]);
@@ -93,11 +95,10 @@ function Hallucinations() {
   const [claimsTotal, setClaimsTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [claimsLoading, setClaimsLoading] = useState(false);
-  const [expandedClaim, setExpandedClaim] = useState<number | null>(null);
-  const [expandedDetail, setExpandedDetail] = useState<Record<string, unknown> | null>(null);
+  const [selectedClaimId, setSelectedClaimId] = useState<number | null>(null);
+  const [claimDetail, setClaimDetail] = useState<Record<string, unknown> | null>(null);
+  const [claimLogContent, setClaimLogContent] = useState<string | null>(null);
   const [jiraModalKeys, setJiraModalKeys] = useState<string[] | null>(null);
-  const [logModalContent, setLogModalContent] = useState<string | null>(null);
-  const [logModalClaimId, setLogModalClaimId] = useState<number | null>(null);
   const [sourceModalContent, setSourceModalContent] = useState<string | null>(null);
   const [sourceModalPath, setSourceModalPath] = useState<string | null>(null);
 
@@ -108,6 +109,29 @@ function Hallucinations() {
   const [issuesPage, setIssuesPage] = useState(0);
   const [issuesSort, setIssuesSort] = useState("refuted");
   const [issuesSortDir, setIssuesSortDir] = useState("desc");
+
+  // Explanations tab state
+  interface ExplanationRow {
+    id: number;
+    claim_id: number;
+    category: string;
+    explanation: string;
+    sources_used: Array<{ type: string; path: string }>;
+    explained_at: string;
+    claim_text: string;
+    claim_type: string;
+    verdict: string | null;
+    confidence: number | null;
+    jira_keys: string[];
+  }
+  interface CategoryCount { category: string; count: number; }
+  const [explanations, setExplanations] = useState<ExplanationRow[]>([]);
+  const [explanationsTotal, setExplanationsTotal] = useState(0);
+  const [explanationsLoading, setExplanationsLoading] = useState(false);
+  const [explanationsPage, setExplanationsPage] = useState(0);
+  const [categoryFilter, setCategoryFilter] = useState("");
+  const [categories, setCategories] = useState<CategoryCount[]>([]);
+  const [selectedExplanation, setSelectedExplanation] = useState<ExplanationRow | null>(null);
 
   // Filters
   const [typeFilter, setTypeFilter] = useState<string>("all");
@@ -182,18 +206,23 @@ function Hallucinations() {
     void fetchClaims();
   }, [fetchClaims]);
 
-  const toggleClaim = async (claimId: number) => {
-    if (expandedClaim === claimId) {
-      setExpandedClaim(null);
-      setExpandedDetail(null);
-      return;
-    }
-    setExpandedClaim(claimId);
-    setExpandedDetail(null);
-    try {
-      const res = await fetch(`/api/hallucinations/claims/${claimId}`);
-      if (res.ok) setExpandedDetail(await res.json());
-    } catch { /* ignore */ }
+  const openClaimModal = async (claimId: number) => {
+    setSelectedClaimId(claimId);
+    setClaimDetail(null);
+    setClaimLogContent(null);
+    const [detailRes, logRes] = await Promise.all([
+      fetch(`/api/hallucinations/claims/${claimId}`).catch(() => null),
+      fetch(`/api/hallucinations/claims/${claimId}/log`).catch(() => null),
+    ]);
+    if (detailRes?.ok) setClaimDetail(await detailRes.json());
+    if (logRes?.ok) setClaimLogContent(await logRes.text());
+    else setClaimLogContent(null);
+  };
+
+  const closeClaimModal = () => {
+    setSelectedClaimId(null);
+    setClaimDetail(null);
+    setClaimLogContent(null);
   };
 
   // Issues tab
@@ -247,21 +276,6 @@ function Hallucinations() {
     }
   };
 
-  const viewLog = async (claimId: number) => {
-    setLogModalClaimId(claimId);
-    setLogModalContent(null);
-    try {
-      const res = await fetch(`/api/hallucinations/claims/${claimId}/log`);
-      if (res.ok) {
-        setLogModalContent(await res.text());
-      } else {
-        setLogModalContent("_Verification log not available for this claim._");
-      }
-    } catch {
-      setLogModalContent("_Failed to load verification log._");
-    }
-  };
-
   const resetFilters = () => {
     setTypeFilter("all");
     setExcludeTypes(new Set());
@@ -271,6 +285,32 @@ function Hallucinations() {
     setSourceFilter("");
     setPage(0);
   };
+
+  // Explanations tab
+  const fetchExplanations = useCallback(async () => {
+    setExplanationsLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set("limit", "50");
+      params.set("offset", String(explanationsPage * 50));
+      if (categoryFilter) params.set("category", categoryFilter);
+      const [res, catRes] = await Promise.all([
+        fetch(`/api/hallucinations/explanations?${params}`),
+        fetch("/api/hallucinations/explanations/categories"),
+      ]);
+      if (res.ok) {
+        const data = await res.json();
+        setExplanations(data.explanations ?? []);
+        setExplanationsTotal(data.total ?? 0);
+      }
+      if (catRes.ok) setCategories(await catRes.json());
+    } catch { /* ignore */ }
+    finally { setExplanationsLoading(false); }
+  }, [explanationsPage, categoryFilter]);
+
+  useEffect(() => {
+    if (activeTab === "explanations") void fetchExplanations();
+  }, [activeTab, fetchExplanations]);
 
   const totalPages = Math.ceil(claimsTotal / pageSize);
 
@@ -288,7 +328,7 @@ function Hallucinations() {
 
       {/* Summary cards */}
       {summary && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3 mb-6">
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 mb-6">
           <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 text-center">
             <div className="text-2xl font-bold text-gray-900 dark:text-gray-100">{summary.total_claims.toLocaleString()}</div>
             <div className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider mt-1">Claims</div>
@@ -312,6 +352,10 @@ function Hallucinations() {
           <div className="bg-white dark:bg-gray-800 border border-amber-200 dark:border-amber-800 rounded-xl p-4 text-center">
             <div className="text-2xl font-bold text-amber-600">{summary.inconclusive}</div>
             <div className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider mt-1">Inconclusive</div>
+          </div>
+          <div className="bg-white dark:bg-gray-800 border border-slate-300 dark:border-slate-600 rounded-xl p-4 text-center">
+            <div className="text-2xl font-bold text-slate-500">{summary.insufficient}</div>
+            <div className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider mt-1">Insufficient</div>
           </div>
           <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 text-center">
             <div className="text-2xl font-bold text-gray-900 dark:text-gray-100">{summary.jira_keys_referenced}</div>
@@ -385,6 +429,12 @@ function Hallucinations() {
             activeTab === "issues" ? "border-primary-600 text-primary-600 dark:text-primary-400" : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700"
           }`}
         >By Issue</button>
+        <button
+          onClick={() => setActiveTab("explanations")}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${
+            activeTab === "explanations" ? "border-primary-600 text-primary-600 dark:text-primary-400" : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700"
+          }`}
+        >Explanations</button>
       </div>
 
       {/* === Issues tab === */}
@@ -433,6 +483,196 @@ function Hallucinations() {
                   <button onClick={() => setIssuesPage((p) => Math.max(0, p - 1))} disabled={issuesPage === 0} className="text-sm font-medium px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 disabled:opacity-50 transition-all">Previous</button>
                   <span className="text-sm text-gray-500 dark:text-gray-400">Page {issuesPage + 1} of {Math.ceil(issuesTotal / 50)}</span>
                   <button onClick={() => setIssuesPage((p) => p + 1)} disabled={issuesPage >= Math.ceil(issuesTotal / 50) - 1} className="text-sm font-medium px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 disabled:opacity-50 transition-all">Next</button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* === Explanations tab === */}
+      {activeTab === "explanations" && (
+        <div>
+          {explanationsLoading && <div className="text-center py-12 text-gray-500 dark:text-gray-400">Loading explanations...</div>}
+          {!explanationsLoading && explanations.length === 0 && categories.length === 0 && (
+            <div className="text-center py-12 text-gray-500 dark:text-gray-400">No explanations yet. Run the explain-claims skill to generate root-cause analyses.</div>
+          )}
+          {!explanationsLoading && categories.length > 0 && (
+            <>
+              {/* Category distribution bar */}
+              <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 mb-6">
+                <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">Explanations by Category</div>
+                {(() => {
+                  const catTotal = categories.reduce((s, c) => s + c.count, 0);
+                  const catColors = ["bg-purple-500", "bg-indigo-500", "bg-pink-500", "bg-teal-500", "bg-orange-500", "bg-cyan-500", "bg-rose-500", "bg-lime-500"];
+                  return (
+                    <>
+                      <div className="flex h-3 rounded-full overflow-hidden mb-3">
+                        {categories.map((cat, i) => (
+                          <div
+                            key={cat.category}
+                            className={catColors[i % catColors.length]}
+                            style={{ width: `${(cat.count / catTotal) * 100}%` }}
+                            title={`${cat.category}: ${cat.count}`}
+                          />
+                        ))}
+                      </div>
+                      <div className="flex gap-3 flex-wrap">
+                        {categories.map((cat, i) => (
+                          <button
+                            key={cat.category}
+                            onClick={() => { setCategoryFilter(categoryFilter === cat.category ? "" : cat.category); setExplanationsPage(0); }}
+                            className={`text-xs flex items-center gap-1.5 cursor-pointer ${categoryFilter === cat.category ? "font-bold" : ""}`}
+                          >
+                            <span className={`inline-block w-2.5 h-2.5 rounded-full ${catColors[i % catColors.length]}`} />
+                            <span className="text-gray-700 dark:text-gray-300">{cat.category}</span>
+                            <span className="text-gray-400">{cat.count}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+
+              {/* Explanations table */}
+              {explanations.length > 0 && (
+                <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden mb-4">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr>
+                        <th className="text-left px-4 py-3 font-semibold text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 w-36">Category</th>
+                        <th className="text-left px-4 py-3 font-semibold text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">Claim</th>
+                        <th className="text-left px-4 py-3 font-semibold text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 w-24">Verdict</th>
+                        <th className="text-left px-4 py-3 font-semibold text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 w-20">Issues</th>
+                        <th className="text-left px-4 py-3 font-semibold text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 w-28">Date</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {explanations.map((exp) => (
+                        <tr
+                          key={exp.id}
+                          className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors"
+                          onClick={() => setSelectedExplanation(exp)}
+                        >
+                          <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800">
+                            <span className="inline-block text-xs font-medium px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300">
+                              {exp.category}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-gray-900 dark:text-gray-100">
+                            <span className="text-xs text-gray-400 mr-1">#{exp.claim_id}</span>
+                            {exp.claim_text.length > 100 ? exp.claim_text.slice(0, 100) + "..." : exp.claim_text}
+                          </td>
+                          <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800">
+                            {exp.verdict ? (
+                              <span className={`inline-block text-xs font-semibold px-2 py-0.5 rounded-full ${VERDICT_CLASSES[exp.verdict] ?? ""}`}>
+                                {exp.verdict}
+                              </span>
+                            ) : (
+                              <span className="text-xs text-gray-400">—</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800">
+                            {exp.jira_keys.length > 0 ? (
+                              <span className="text-xs font-mono text-primary-600 dark:text-primary-400">{exp.jira_keys.join(", ")}</span>
+                            ) : (
+                              <span className="text-xs text-gray-400">—</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-xs text-gray-500 dark:text-gray-400">
+                            {new Date(exp.explained_at).toLocaleDateString()}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Explanation detail modal */}
+              {selectedExplanation && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setSelectedExplanation(null)}>
+                  <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                    {/* Header */}
+                    <div className="flex items-center justify-between px-6 py-3 bg-gray-50 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
+                      <div className="flex items-center gap-3">
+                        <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">Explanation — Claim #{selectedExplanation.claim_id}</span>
+                        <span className="inline-block text-xs font-medium px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300">
+                          {selectedExplanation.category}
+                        </span>
+                        {selectedExplanation.verdict && (
+                          <span className={`inline-block text-xs font-semibold px-2 py-0.5 rounded-full ${VERDICT_CLASSES[selectedExplanation.verdict] ?? ""}`}>
+                            {selectedExplanation.verdict}
+                          </span>
+                        )}
+                      </div>
+                      <button onClick={() => setSelectedExplanation(null)} className="p-1.5 text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 rounded-lg"><X size={18} /></button>
+                    </div>
+
+                    {/* Body */}
+                    <div className="flex-1 overflow-y-auto p-6 space-y-5">
+                      <div>
+                        <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Claim</div>
+                        <div className="text-sm text-gray-900 dark:text-gray-100 leading-relaxed">{selectedExplanation.claim_text}</div>
+                      </div>
+
+                      <div>
+                        <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Root Cause Explanation</div>
+                        <div className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed bg-gray-50 dark:bg-gray-700/30 border border-gray-200 dark:border-gray-700 rounded-lg p-4">{selectedExplanation.explanation}</div>
+                      </div>
+
+                      {selectedExplanation.sources_used?.length > 0 && (
+                        <div>
+                          <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">Sources Used</div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {selectedExplanation.sources_used.map((src, j) => (
+                              <span key={j} className="text-xs font-mono px-2 py-1 rounded bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400">
+                                <span className="font-semibold text-gray-700 dark:text-gray-300">{src.type}</span>: {src.path.length > 60 ? "..." + src.path.slice(-60) : src.path}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {selectedExplanation.jira_keys.length > 0 && (
+                        <div>
+                          <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">Jira Keys</div>
+                          <div className="flex gap-1.5 flex-wrap">
+                            {selectedExplanation.jira_keys.map((jk) => (
+                              <button
+                                key={jk}
+                                onClick={() => { setJiraFilter(jk); setPage(0); setActiveTab("claims"); setSelectedExplanation(null); }}
+                                className="text-xs font-mono px-2 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-primary-600 dark:text-primary-400 hover:underline cursor-pointer"
+                              >
+                                {jk}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-2 gap-4 text-sm border-t border-gray-200 dark:border-gray-700 pt-4">
+                        <div>
+                          <div className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Confidence</div>
+                          <div className="text-gray-900 dark:text-gray-100">{selectedExplanation.confidence != null ? `${selectedExplanation.confidence}%` : "—"}</div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Explained At</div>
+                          <div className="text-gray-900 dark:text-gray-100">{new Date(selectedExplanation.explained_at).toLocaleString()}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Pagination */}
+              {explanationsTotal > 50 && (
+                <div className="flex items-center justify-center gap-4">
+                  <button onClick={() => setExplanationsPage((p) => Math.max(0, p - 1))} disabled={explanationsPage === 0} className="text-sm font-medium px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 disabled:opacity-50 transition-all">Previous</button>
+                  <span className="text-sm text-gray-500 dark:text-gray-400">Page {explanationsPage + 1} of {Math.ceil(explanationsTotal / 50)}</span>
+                  <button onClick={() => setExplanationsPage((p) => p + 1)} disabled={explanationsPage >= Math.ceil(explanationsTotal / 50) - 1} className="text-sm font-medium px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 disabled:opacity-50 transition-all">Next</button>
                 </div>
               )}
             </>
@@ -507,7 +747,6 @@ function Hallucinations() {
           <table className="w-full text-sm">
             <thead>
               <tr>
-                <th className="px-4 py-3 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 w-8"></th>
                 {([["claim", "Claim", ""], ["type", "Type", " w-28"], ["verdict", "Verdict", " w-24"], ["confidence", "Conf", " w-16"], ["jira", "Issues", " w-16"], ["sources", "Sources", " w-16"]] as const).map(([field, label, width]) => (
                   <th
                     key={field}
@@ -517,161 +756,221 @@ function Hallucinations() {
                     {label}{sortIndicator(field)}
                   </th>
                 ))}
+                <th className="px-4 py-3 font-semibold text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 w-28">Category</th>
               </tr>
             </thead>
             <tbody>
               {claims.map((c) => (
-                <>
-                  <tr
-                    key={c.id}
-                    className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors"
-                    onClick={() => void toggleClaim(c.id)}
-                  >
-                    <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800">
-                      {expandedClaim === c.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                    </td>
-                    <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-gray-900 dark:text-gray-100">
-                      <span className="text-xs text-gray-400 dark:text-gray-600 mr-1.5">#{c.id}</span>
-                      {c.claim_text.length > 120 ? c.claim_text.slice(0, 120) + "..." : c.claim_text}
-                    </td>
-                    <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800">
-                      <span className={`inline-block text-xs font-semibold px-2 py-0.5 rounded-full ${TYPE_CLASSES[c.claim_type] ?? "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300"}`}>
-                        {c.claim_type}
+                <tr
+                  key={c.id}
+                  className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors"
+                  onClick={() => void openClaimModal(c.id)}
+                >
+                  <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-gray-900 dark:text-gray-100">
+                    <span className="text-xs text-gray-400 dark:text-gray-600 mr-1.5">#{c.id}</span>
+                    {c.claim_text.length > 120 ? c.claim_text.slice(0, 120) + "..." : c.claim_text}
+                  </td>
+                  <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800">
+                    <span className={`inline-block text-xs font-semibold px-2 py-0.5 rounded-full ${TYPE_CLASSES[c.claim_type] ?? "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300"}`}>
+                      {c.claim_type}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800">
+                    {c.verdict ? (
+                      <span className={`inline-block text-xs font-semibold px-2 py-0.5 rounded-full ${VERDICT_CLASSES[c.verdict.verdict] ?? ""}`}>
+                        {c.verdict.verdict}
                       </span>
-                    </td>
-                    <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800">
-                      {c.verdict ? (
-                        <span className={`inline-block text-xs font-semibold px-2 py-0.5 rounded-full ${VERDICT_CLASSES[c.verdict.verdict] ?? ""}`}>
-                          {c.verdict.verdict}
-                        </span>
-                      ) : (
-                        <span className="text-xs text-gray-400 dark:text-gray-500">pending</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-center text-xs">
-                      {c.verdict ? (
-                        <span className={c.verdict.confidence >= 80 ? "text-gray-900 dark:text-gray-100 font-medium" : c.verdict.confidence >= 50 ? "text-amber-600" : "text-red-600"}>
-                          {c.verdict.confidence}%
-                        </span>
-                      ) : (
-                        <span className="text-gray-400">—</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-center">
-                      {c.jira_keys.length === 0 ? (
-                        <span className="text-xs text-gray-400">—</span>
-                      ) : (
-                        <button
-                          onClick={(e) => { e.stopPropagation(); setJiraModalKeys(c.jira_keys); }}
-                          className="text-xs font-medium text-primary-600 dark:text-primary-400 hover:underline cursor-pointer"
-                        >
-                          {c.jira_keys.length}
-                        </button>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-center text-xs text-gray-500 dark:text-gray-400">
-                      {c.sources.length}
-                    </td>
-                  </tr>
-                  {expandedClaim === c.id && (
-                    <tr key={`${c.id}-detail`}>
-                      <td colSpan={5} className="px-4 py-4 border-b border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-700/20">
-                        {!expandedDetail && <div className="text-sm text-gray-400">Loading...</div>}
-                        {expandedDetail && (
-                          <div className="space-y-4">
-                            {/* Full claim text */}
-                            <div>
-                              <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Claim</div>
-                              <div className="text-sm text-gray-900 dark:text-gray-100">{c.claim_text}</div>
-                            </div>
-
-                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                              {/* Sources */}
-                              <div>
-                                <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Sources ({((expandedDetail as Record<string, unknown>).sources as Array<Record<string, string>>)?.length ?? 0})</div>
-                                <div className="space-y-1">
-                                  {((expandedDetail as Record<string, unknown>).sources as Array<Record<string, string>> ?? []).map((s, i) => (
-                                    <div key={i} className="text-xs text-gray-600 dark:text-gray-400">
-                                      <button
-                                        onClick={(e) => { e.stopPropagation(); void viewSourceFile(s.source_file ?? ""); }}
-                                        className="font-mono text-primary-600 dark:text-primary-400 hover:underline cursor-pointer text-left"
-                                      >
-                                        {s.source_file}
-                                      </button>
-                                      {s.original_text && (
-                                        <div className="mt-1 pl-3 border-l-2 border-gray-200 dark:border-gray-600 text-gray-500 dark:text-gray-400 italic">
-                                          {(s.original_text as string).length > 200 ? (s.original_text as string).slice(0, 200) + "..." : s.original_text}
-                                        </div>
-                                      )}
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-
-                              {/* Verdict detail */}
-                              <div>
-                                {((expandedDetail as Record<string, unknown>).verdicts as Array<Record<string, unknown>> ?? []).length > 0 ? (
-                                  <>
-                                    <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Verdict</div>
-                                    {((expandedDetail as Record<string, unknown>).verdicts as Array<Record<string, unknown>>).map((v, i) => (
-                                      <div key={i} className="space-y-1">
-                                        <div className="flex items-center gap-2">
-                                          <span className={`inline-block text-xs font-semibold px-2 py-0.5 rounded-full ${VERDICT_CLASSES[v.verdict as string] ?? ""}`}>
-                                            {v.verdict as string}
-                                          </span>
-                                          <span className="text-xs text-gray-500">confidence: {v.confidence as number}%</span>
-                                        </div>
-                                        {v.evidence_summary ? (
-                                          <div className="text-sm text-gray-700 dark:text-gray-300">{String(v.evidence_summary)}</div>
-                                        ) : null}
-                                        {v.evidence_detail ? (
-                                          <div className="text-xs pl-3 border-l-2 border-gray-200 dark:border-gray-600 text-gray-500 dark:text-gray-400 font-mono">
-                                            {String(v.evidence_detail)}
-                                          </div>
-                                        ) : null}
-                                      </div>
-                                    ))}
-                                  </>
-                                ) : (
-                                  <div className="text-xs text-gray-400 dark:text-gray-500">Not yet verified</div>
-                                )}
-
-                                {/* Jira keys */}
-                                {c.jira_keys.length > 0 && (
-                                  <div className="mt-3">
-                                    <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Jira Keys</div>
-                                    <div className="flex gap-1 flex-wrap">
-                                      {c.jira_keys.map((jk) => (
-                                        <button
-                                          key={jk}
-                                          onClick={(e) => { e.stopPropagation(); setJiraFilter(jk); setPage(0); setExpandedClaim(null); }}
-                                          className="text-xs font-mono px-2 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-primary-600 dark:text-primary-400 hover:underline cursor-pointer"
-                                        >
-                                          {jk}
-                                        </button>
-                                      ))}
-                                    </div>
-                                  </div>
-                                )}
-
-                                {/* View log */}
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); void viewLog(c.id); }}
-                                  className="mt-3 text-xs text-primary-600 dark:text-primary-400 hover:underline cursor-pointer"
-                                >
-                                  View verification log
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  )}
-                </>
+                    ) : (
+                      <span className="text-xs text-gray-400 dark:text-gray-500">pending</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-center text-xs">
+                    {c.verdict ? (
+                      <span className={c.verdict.confidence >= 80 ? "text-gray-900 dark:text-gray-100 font-medium" : c.verdict.confidence >= 50 ? "text-amber-600" : "text-red-600"}>
+                        {c.verdict.confidence}%
+                      </span>
+                    ) : (
+                      <span className="text-gray-400">—</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-center text-xs text-primary-600 dark:text-primary-400">
+                    {c.jira_keys.length || "—"}
+                  </td>
+                  <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-center text-xs text-gray-500 dark:text-gray-400">
+                    {c.sources.length}
+                  </td>
+                  <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-center">
+                    {c.explanation_category ? (
+                      <span className="inline-block text-xs font-medium px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300">
+                        {c.explanation_category}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-gray-400">—</span>
+                    )}
+                  </td>
+                </tr>
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Claim detail modal */}
+      {selectedClaimId && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={closeClaimModal}>
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-6xl h-[92vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-3 bg-gray-50 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">Claim #{selectedClaimId}</span>
+                {claimDetail && (
+                  <>
+                    <span className={`inline-block text-xs font-semibold px-2 py-0.5 rounded-full ${TYPE_CLASSES[(claimDetail.claim_type as string)] ?? "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300"}`}>
+                      {claimDetail.claim_type as string}
+                    </span>
+                    {(() => {
+                      const firstVerdict = ((claimDetail.verdicts as Array<Record<string, unknown>>) ?? [])[0];
+                      if (!firstVerdict) return null;
+                      const v = firstVerdict.verdict as string;
+                      return (
+                        <span className={`inline-block text-xs font-semibold px-2 py-0.5 rounded-full ${VERDICT_CLASSES[v] ?? ""}`}>
+                          {v}
+                        </span>
+                      );
+                    })()}
+                  </>
+                )}
+              </div>
+              <button onClick={closeClaimModal} className="p-1.5 text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 rounded-lg"><X size={18} /></button>
+            </div>
+
+            {/* Body */}
+            <div className="flex-1 overflow-y-auto p-6">
+              {!claimDetail && <div className="text-sm text-gray-400">Loading...</div>}
+              {claimDetail && (
+                <div className="space-y-6">
+                  {/* Claim text */}
+                  <div>
+                    <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Claim</div>
+                    <div className="text-sm text-gray-900 dark:text-gray-100 leading-relaxed">{claimDetail.claim_text as string}</div>
+                  </div>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {/* Sources */}
+                    <div>
+                      <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">Sources ({(claimDetail.sources as Array<Record<string, string>>)?.length ?? 0})</div>
+                      <div className="space-y-2">
+                        {((claimDetail.sources as Array<Record<string, string>>) ?? []).map((s, i) => (
+                          <div key={i} className="text-xs text-gray-600 dark:text-gray-400">
+                            <button
+                              onClick={() => void viewSourceFile(s.source_file ?? "")}
+                              className="font-mono text-primary-600 dark:text-primary-400 hover:underline cursor-pointer text-left"
+                            >
+                              {s.source_file}
+                            </button>
+                            {s.original_text && (
+                              <div className="mt-1 pl-3 border-l-2 border-gray-200 dark:border-gray-600 text-gray-500 dark:text-gray-400 italic">
+                                {(s.original_text as string).length > 300 ? (s.original_text as string).slice(0, 300) + "..." : s.original_text}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Jira keys */}
+                      {((claimDetail.jira_keys as string[]) ?? []).length > 0 && (
+                        <div className="mt-4">
+                          <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Jira Keys</div>
+                          <div className="flex gap-1 flex-wrap">
+                            {(claimDetail.jira_keys as string[]).map((jk) => (
+                              <button
+                                key={jk}
+                                onClick={() => { setJiraFilter(jk); setPage(0); closeClaimModal(); }}
+                                className="text-xs font-mono px-2 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-primary-600 dark:text-primary-400 hover:underline cursor-pointer"
+                              >
+                                {jk}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Verdict detail */}
+                    <div>
+                      {((claimDetail.verdicts as Array<Record<string, unknown>>) ?? []).length > 0 ? (
+                        <>
+                          <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">Verdict</div>
+                          {(claimDetail.verdicts as Array<Record<string, unknown>>).map((v, i) => (
+                            <div key={i} className="space-y-2">
+                              <div className="flex items-center gap-2">
+                                <span className={`inline-block text-xs font-semibold px-2 py-0.5 rounded-full ${VERDICT_CLASSES[v.verdict as string] ?? ""}`}>
+                                  {v.verdict as string}
+                                </span>
+                                <span className="text-xs text-gray-500">confidence: {v.confidence as number}%</span>
+                              </div>
+                              {v.evidence_summary ? (
+                                <div className="text-sm text-gray-700 dark:text-gray-300">{String(v.evidence_summary)}</div>
+                              ) : null}
+                              {v.evidence_detail ? (
+                                <div className="text-xs pl-3 border-l-2 border-gray-200 dark:border-gray-600 text-gray-500 dark:text-gray-400 font-mono whitespace-pre-wrap">
+                                  {String(v.evidence_detail)}
+                                </div>
+                              ) : null}
+                            </div>
+                          ))}
+                        </>
+                      ) : (
+                        <div className="text-xs text-gray-400 dark:text-gray-500">Not yet verified</div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Explanation */}
+                  {((claimDetail.explanations as Array<Record<string, unknown>>) ?? []).length > 0 && (
+                    <div className="border-t border-gray-200 dark:border-gray-700 pt-5">
+                      <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">Root Cause Explanation</div>
+                      {(claimDetail.explanations as Array<Record<string, unknown>>).map((exp, i) => (
+                        <div key={i} className="bg-gray-50 dark:bg-gray-700/30 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+                          <div className="flex items-center gap-2 mb-3">
+                            <span className="inline-block text-xs font-medium px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300">
+                              {exp.category as string}
+                            </span>
+                            <span className="text-xs text-gray-400">{new Date(exp.explained_at as string).toLocaleDateString()}</span>
+                          </div>
+                          <div className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">{exp.explanation as string}</div>
+                          {(exp.sources_used as Array<{type: string; path: string}>)?.length > 0 && (
+                            <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-600">
+                              <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Sources Used</div>
+                              <div className="flex flex-wrap gap-1.5">
+                                {(exp.sources_used as Array<{type: string; path: string}>).map((src, j) => (
+                                  <span key={j} className="text-xs font-mono px-1.5 py-0.5 rounded bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400">
+                                    <span className="font-semibold text-gray-700 dark:text-gray-300">{src.type}</span>: {src.path.length > 50 ? "..." + src.path.slice(-50) : src.path}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Verification log */}
+                  <div className="border-t border-gray-200 dark:border-gray-700 pt-5">
+                    <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">Verification Log</div>
+                    {claimLogContent ? (
+                      <div className="bg-gray-50 dark:bg-gray-700/30 border border-gray-200 dark:border-gray-700 rounded-lg p-5">
+                        <div className="text-sm text-gray-800 dark:text-gray-200 leading-relaxed" dangerouslySetInnerHTML={{ __html: renderMarkdown(claimLogContent) }} />
+                      </div>
+                    ) : (
+                      <div className="text-xs text-gray-400 dark:text-gray-500 italic">No verification log available for this claim.</div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
@@ -688,31 +987,13 @@ function Hallucinations() {
                 {jiraModalKeys.sort().map((jk) => (
                   <button
                     key={jk}
-                    onClick={() => { setJiraFilter(jk); setPage(0); setExpandedClaim(null); setJiraModalKeys(null); }}
+                    onClick={() => { setJiraFilter(jk); setPage(0); closeClaimModal(); setJiraModalKeys(null); }}
                     className="text-xs font-mono px-2.5 py-1 rounded-lg bg-gray-100 dark:bg-gray-700 text-primary-600 dark:text-primary-400 hover:bg-primary-50 dark:hover:bg-primary-900/30 cursor-pointer transition-colors"
                   >
                     {jk}
                   </button>
                 ))}
               </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Verification log modal */}
-      {logModalClaimId && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-6" onClick={() => { setLogModalClaimId(null); setLogModalContent(null); }}>
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-5xl h-[90vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-5 py-3 bg-gray-50 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
-              <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">Verification Log — Claim {logModalClaimId}</span>
-              <button onClick={() => { setLogModalClaimId(null); setLogModalContent(null); }} className="p-1.5 text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 rounded-lg"><X size={18} /></button>
-            </div>
-            <div className="flex-1 overflow-auto p-5">
-              {!logModalContent && <div className="text-sm text-gray-400">Loading...</div>}
-              {logModalContent && (
-                <div className="text-sm text-gray-800 dark:text-gray-200 leading-relaxed" dangerouslySetInnerHTML={{ __html: renderMarkdown(logModalContent) }} />
-              )}
             </div>
           </div>
         </div>

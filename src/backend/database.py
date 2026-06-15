@@ -361,7 +361,7 @@ CREATE INDEX IF NOT EXISTS idx_claim_jira_keys_key ON claim_jira_keys(jira_key);
 
 CREATE TABLE IF NOT EXISTS claim_verdicts (
     id INTEGER PRIMARY KEY,
-    claim_id INTEGER REFERENCES claims(id) ON DELETE CASCADE,
+    claim_id INTEGER UNIQUE REFERENCES claims(id) ON DELETE CASCADE,
     verdict TEXT NOT NULL,
     confidence INTEGER,
     evidence_summary TEXT,
@@ -370,6 +370,47 @@ CREATE TABLE IF NOT EXISTS claim_verdicts (
     verified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_claim_verdicts_claim ON claim_verdicts(claim_id);
+
+CREATE TABLE IF NOT EXISTS claim_explanations (
+    id INTEGER PRIMARY KEY,
+    claim_id INTEGER UNIQUE REFERENCES claims(id) ON DELETE CASCADE,
+    category TEXT NOT NULL,
+    explanation TEXT NOT NULL,
+    sources_used TEXT,
+    explained_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_claim_explanations_claim ON claim_explanations(claim_id);
+CREATE INDEX IF NOT EXISTS idx_claim_explanations_category ON claim_explanations(category);
+
+CREATE TABLE IF NOT EXISTS otel_log_records (
+    id INTEGER PRIMARY KEY,
+    pipeline_run_id INTEGER REFERENCES pipeline_runs(id) ON DELETE CASCADE,
+    trace_id TEXT,
+    span_id TEXT,
+    severity_number INTEGER,
+    severity_text TEXT,
+    body TEXT,
+    attributes TEXT,
+    resource_attrs TEXT,
+    observed_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_otel_logs_run ON otel_log_records(pipeline_run_id);
+CREATE INDEX IF NOT EXISTS idx_otel_logs_trace ON otel_log_records(trace_id);
+
+CREATE TABLE IF NOT EXISTS otel_metric_points (
+    id INTEGER PRIMARY KEY,
+    pipeline_run_id INTEGER REFERENCES pipeline_runs(id) ON DELETE CASCADE,
+    metric_name TEXT NOT NULL,
+    metric_type TEXT NOT NULL,
+    value REAL,
+    attributes TEXT,
+    resource_attrs TEXT,
+    recorded_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_otel_metrics_run ON otel_metric_points(pipeline_run_id);
+CREATE INDEX IF NOT EXISTS idx_otel_metrics_name ON otel_metric_points(metric_name);
 
 CREATE TABLE IF NOT EXISTS collector_state (
     id INTEGER PRIMARY KEY,

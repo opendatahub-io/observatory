@@ -8,6 +8,7 @@ import {
   AlertTriangle,
   Workflow,
   Activity,
+  Radio,
   Settings,
   ChevronLeft,
   ChevronRight,
@@ -40,6 +41,7 @@ const NAV_SECTIONS: NavSection[] = [
       { to: "/vulnerabilities", label: "Vulnerabilities", icon: Shield },
       { to: "/hallucinations", label: "Hallucinations", icon: AlertTriangle },
       { to: "/agent-traces", label: "Traces", icon: Workflow },
+      { to: "/otel-explorer", label: "OTEL Explorer", icon: Radio },
     ],
   },
   {

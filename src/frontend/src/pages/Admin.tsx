@@ -255,6 +255,10 @@ function Admin() {
   const [purging, setPurging] = useState(false);
   const [purgeResult, setPurgeResult] = useState<PurgeResult | null>(null);
 
+  /* ---------- Claims clear state ---------- */
+  const [clearingClaims, setClearingClaims] = useState(false);
+  const [clearClaimsResult, setClearClaimsResult] = useState<Record<string, number> | null>(null);
+
   /* ---------- API Keys state ---------- */
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
   const [apiKeysLoading, setApiKeysLoading] = useState(true);
@@ -518,6 +522,22 @@ function Admin() {
     } finally {
       setPurging(false);
     }
+  };
+
+  /* ---------- Clear claims ---------- */
+
+  const handleClearClaims = async () => {
+    if (!window.confirm("Delete ALL hallucination data? This removes all claims, verdicts, explanations, and jira key links. This cannot be undone.")) return;
+    setClearingClaims(true);
+    setClearClaimsResult(null);
+    try {
+      const res = await fetch("/api/hallucinations/all", { method: "DELETE" });
+      if (res.ok) {
+        setClearClaimsResult(await res.json());
+        void fetchDbHealth();
+      }
+    } catch { /* ignore */ }
+    finally { setClearingClaims(false); }
   };
 
   /* ---------- API Key helpers ---------- */
@@ -1026,6 +1046,25 @@ function Admin() {
               {purgeResult.run_commands} commands,{" "}
               {purgeResult.run_packages} packages,{" "}
               {purgeResult.run_containers} containers
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center gap-4 mt-4">
+          <button
+            className={`${tw.btn} ${tw.btnDanger}`}
+            onClick={() => void handleClearClaims()}
+            disabled={clearingClaims}
+          >
+            {clearingClaims ? "Clearing..." : "Clear All Hallucination Data"}
+          </button>
+
+          {clearClaimsResult && (
+            <span className="text-sm text-emerald-600 dark:text-emerald-400">
+              Deleted {clearClaimsResult.claims ?? 0} claims,{" "}
+              {clearClaimsResult.claim_verdicts ?? 0} verdicts,{" "}
+              {clearClaimsResult.claim_explanations ?? 0} explanations,{" "}
+              {clearClaimsResult.claim_sources ?? 0} sources
             </span>
           )}
         </div>

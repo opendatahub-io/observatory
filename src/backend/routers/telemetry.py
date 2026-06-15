@@ -128,3 +128,22 @@ async def telemetry_dimensions(
     db: aiosqlite.Connection = Depends(get_db),
 ):
     return await get_all_dimension_summaries(db)
+
+
+@router.get("/api/telemetry/spans/{run_id}")
+async def get_spans_for_run(
+    run_id: int, db: aiosqlite.Connection = Depends(get_db)
+):
+    """Return all OTEL spans for a given pipeline run, ordered by start_time."""
+    cursor = await db.execute(
+        """SELECT id, pipeline_run_id, trace_id, span_id, parent_span_id,
+                  operation_name, service_name,
+                  start_time, end_time, duration_ms,
+                  status_code, attributes, created_at
+           FROM telemetry_spans
+           WHERE pipeline_run_id = ?
+           ORDER BY start_time""",
+        (run_id,),
+    )
+    rows = await cursor.fetchall()
+    return {"spans": [dict(row) for row in rows]}

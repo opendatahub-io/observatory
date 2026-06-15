@@ -13,6 +13,7 @@ import Artifacts from "./pages/Artifacts";
 import Collector from "./pages/Collector";
 import Hallucinations from "./pages/Hallucinations";
 import TracesPage from "./pages/Traces";
+import OtelExplorer from "./pages/OtelExplorer";
 
 function App() {
   return (
@@ -29,6 +30,7 @@ function App() {
         <Route path="/vulnerabilities" element={<VulnerabilityDashboard />} />
         <Route path="/hallucinations" element={<Hallucinations />} />
         <Route path="/agent-traces" element={<TracesPage />} />
+        <Route path="/otel-explorer" element={<OtelExplorer />} />
         <Route path="/collector" element={<Collector />} />
         <Route path="/admin" element={<Admin />} />
       </Route>
