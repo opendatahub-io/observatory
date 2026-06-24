@@ -828,11 +828,11 @@ function Hallucinations() {
                     <span className={`inline-block text-xs font-semibold px-2 py-0.5 rounded-full ${TYPE_CLASSES[(claimDetail.claim_type as string)] ?? "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300"}`}>
                       {claimDetail.claim_type as string}
                     </span>
-                    {claimDetail.verdict && (
+                    {claimDetail.verdict ? (
                       <span className={`inline-block text-xs font-semibold px-2 py-0.5 rounded-full ${VERDICT_CLASSES[(claimDetail.verdict as Record<string, unknown>).verdict as string] ?? ""}`}>
                         {(claimDetail.verdict as Record<string, unknown>).verdict as string}
                       </span>
-                    )}
+                    ) : null}
                   </>
                 )}
               </div>
@@ -923,7 +923,7 @@ function Hallucinations() {
                   </div>
 
                   {/* Explanation */}
-                  {claimDetail.explanation && (() => {
+                  {claimDetail.explanation ? (() => {
                     const exp = claimDetail.explanation as Record<string, unknown>;
                     return (
                       <div className="border-t border-gray-200 dark:border-gray-700 pt-5">
@@ -951,7 +951,7 @@ function Hallucinations() {
                         </div>
                       </div>
                     );
-                  })()}
+                  })() : null}
 
                   {/* Verification log */}
                   <div className="border-t border-gray-200 dark:border-gray-700 pt-5">
