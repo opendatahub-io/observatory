@@ -14,6 +14,9 @@ import Collector from "./pages/Collector";
 import Hallucinations from "./pages/Hallucinations";
 import TracesPage from "./pages/Traces";
 import OtelExplorer from "./pages/OtelExplorer";
+import Chat from "./pages/Chat";
+import KnowledgeBase from "./pages/KnowledgeBase";
+import IntelligenceSettings from "./pages/IntelligenceSettings";
 
 function App() {
   return (
@@ -31,6 +34,9 @@ function App() {
         <Route path="/hallucinations" element={<Hallucinations />} />
         <Route path="/agent-traces" element={<TracesPage />} />
         <Route path="/otel-explorer" element={<OtelExplorer />} />
+        <Route path="/chat" element={<Chat />} />
+        <Route path="/knowledge-base" element={<KnowledgeBase />} />
+        <Route path="/intelligence-settings" element={<IntelligenceSettings />} />
         <Route path="/collector" element={<Collector />} />
         <Route path="/admin" element={<Admin />} />
       </Route>

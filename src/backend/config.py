@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     ssl_verify: bool = True
     host: str = "0.0.0.0"
     port: int = 8000
+    anthropic_api_key: str = ""
+    anthropic_vertex_project_id: str = ""
+    cloud_ml_region: str = "us-east5"
+    chat_model: str = "claude-sonnet-4-20250514"
 
     model_config = {"env_prefix": "OBSERVATORY_"}
 
