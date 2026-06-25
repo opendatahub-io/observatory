@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from pathlib import Path
 
 import aiosqlite
 import httpx
@@ -155,6 +157,29 @@ TOOL_DEFINITIONS: list[dict] = [
                 "max_results": {"type": "integer", "description": "Max issues to return (max 50)", "default": 20},
             },
             "required": ["jql"],
+        },
+    },
+    {
+        "name": "browse_files",
+        "description": "List files and directories at a given path. Restricted to allowed directories (/app/.context, /app/artifacts). Use this to explore the filesystem structure before reading specific files.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Directory path to list (e.g. /app/.context or /app/artifacts/claims)"},
+                "recursive": {"type": "boolean", "description": "If true, list all files recursively (max 200 entries)", "default": False},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "read_file",
+        "description": "Read the contents of a file. Restricted to allowed directories (/app/.context, /app/artifacts). Returns the first 50KB of text content.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path to read (e.g. /app/.context/architecture-context/README.md)"},
+            },
+            "required": ["path"],
         },
     },
     {
@@ -378,6 +403,79 @@ async def _handle_kb_suggest(db: aiosqlite.Connection, input: dict) -> dict:
     return {"article": article, "message": "Article suggested for operator review"}
 
 
+_ALLOWED_ROOTS = [Path("/app/.context"), Path("/app/artifacts")]
+_MAX_FILE_SIZE = 50 * 1024
+
+
+def _validate_path(raw: str) -> Path:
+    resolved = Path(raw).resolve()
+    if not any(resolved == root or root in resolved.parents for root in _ALLOWED_ROOTS):
+        raise ValueError(
+            f"Access denied: {raw} is outside allowed directories "
+            f"({', '.join(str(r) for r in _ALLOWED_ROOTS)})"
+        )
+    return resolved
+
+
+async def _handle_browse_files(_db: aiosqlite.Connection, input: dict) -> dict:
+    try:
+        target = _validate_path(input["path"])
+    except ValueError as e:
+        return {"error": str(e)}
+
+    if not target.exists():
+        return {"error": f"Path not found: {input['path']}"}
+    if not target.is_dir():
+        return {"error": f"Not a directory: {input['path']}. Use read_file to read file contents."}
+
+    entries = []
+    if input.get("recursive"):
+        for p in sorted(target.rglob("*")):
+            if len(entries) >= 200:
+                break
+            entries.append({
+                "path": str(p),
+                "type": "dir" if p.is_dir() else "file",
+                "size": p.stat().st_size if p.is_file() else None,
+            })
+    else:
+        for p in sorted(target.iterdir()):
+            entries.append({
+                "path": str(p),
+                "name": p.name,
+                "type": "dir" if p.is_dir() else "file",
+                "size": p.stat().st_size if p.is_file() else None,
+            })
+
+    return {"directory": str(target), "entries": entries, "count": len(entries)}
+
+
+async def _handle_read_file(_db: aiosqlite.Connection, input: dict) -> dict:
+    try:
+        target = _validate_path(input["path"])
+    except ValueError as e:
+        return {"error": str(e)}
+
+    if not target.exists():
+        return {"error": f"File not found: {input['path']}"}
+    if not target.is_file():
+        return {"error": f"Not a file: {input['path']}. Use browse_files to list directories."}
+
+    size = target.stat().st_size
+    try:
+        content = target.read_text(errors="replace")[:_MAX_FILE_SIZE]
+    except Exception as e:
+        return {"error": f"Could not read file: {e}"}
+
+    truncated = size > _MAX_FILE_SIZE
+    return {
+        "path": str(target),
+        "size": size,
+        "truncated": truncated,
+        "content": content,
+    }
+
+
 async def _resolve_endpoint(db: aiosqlite.Connection, source_type: str) -> str | None:
     sources = await ds_crud.list_data_sources(db, status="active", source_type=source_type)
     if sources and sources[0].get("endpoint"):
@@ -555,6 +653,8 @@ _TOOL_HANDLERS = {
     "query_data_sources": _handle_query_data_sources,
     "query_jira": _handle_query_jira,
     "query_mlflow": _handle_query_mlflow,
+    "browse_files": _handle_browse_files,
+    "read_file": _handle_read_file,
 }
 
 
