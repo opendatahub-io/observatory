@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 
 import aiosqlite
+import httpx
+
+log = logging.getLogger(__name__)
 
 from backend.crud import data_sources as ds_crud
 from backend.crud import hallucinations as claims_crud
@@ -41,7 +45,7 @@ TOOL_DEFINITIONS: list[dict] = [
     },
     {
         "name": "query_claims",
-        "description": "Search verified factual claims extracted from pipeline outputs. Filter by claim type, verdict, or text search.",
+        "description": "Search verified factual claims extracted from pipeline outputs. Filter by claim type, verdict, Jira key, or text search.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -49,6 +53,7 @@ TOOL_DEFINITIONS: list[dict] = [
                 "claim_type": {"type": "string", "description": "Filter by claim type"},
                 "verdict": {"type": "string", "description": "Filter by verdict (supported, refuted, insufficient, inconclusive)"},
                 "pipeline_slug": {"type": "string", "description": "Filter claims from a specific pipeline"},
+                "jira_key": {"type": "string", "description": "Filter claims linked to a specific Jira issue (e.g. RHAISTRAT-320)"},
                 "limit": {"type": "integer", "description": "Max results", "default": 20},
             },
             "required": [],
@@ -139,6 +144,34 @@ TOOL_DEFINITIONS: list[dict] = [
             "required": [],
         },
     },
+    {
+        "name": "query_jira",
+        "description": "Query the configured Jira instance using JQL. Returns issue keys, summaries, statuses, and other fields. Use this to answer questions about Jira tickets, counts, and project contents.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "jql": {"type": "string", "description": "JQL query (e.g. 'project = RHAIRFE ORDER BY created DESC')"},
+                "fields": {"type": "string", "description": "Comma-separated fields to return (default: key,summary,status,issuetype,priority,created)", "default": "key,summary,status,issuetype,priority,created"},
+                "max_results": {"type": "integer", "description": "Max issues to return (max 50)", "default": 20},
+            },
+            "required": ["jql"],
+        },
+    },
+    {
+        "name": "query_mlflow",
+        "description": "Query the configured MLflow tracking server. Search experiments, list runs, or get run metrics. Use this to answer questions about ML experiments, model training, token usage, and costs.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["search_experiments", "search_runs", "get_run"], "description": "API action to perform"},
+                "experiment_name": {"type": "string", "description": "Filter experiments or runs by name pattern"},
+                "run_id": {"type": "string", "description": "Specific run ID (for get_run action)"},
+                "filter_string": {"type": "string", "description": "MLflow filter string for search_runs (e.g. 'metrics.cost_usd > 0')"},
+                "max_results": {"type": "integer", "description": "Max results to return", "default": 20},
+            },
+            "required": ["action"],
+        },
+    },
 ]
 
 
@@ -216,6 +249,7 @@ async def _handle_query_claims(db: aiosqlite.Connection, input: dict) -> dict:
         claim_type=input.get("claim_type"),
         verdict=input.get("verdict"),
         pipeline_slug=input.get("pipeline_slug"),
+        jira_key=input.get("jira_key"),
         limit=input.get("limit", 20),
         offset=0,
     )
@@ -344,6 +378,150 @@ async def _handle_kb_suggest(db: aiosqlite.Connection, input: dict) -> dict:
     return {"article": article, "message": "Article suggested for operator review"}
 
 
+async def _resolve_endpoint(db: aiosqlite.Connection, source_type: str) -> str | None:
+    sources = await ds_crud.list_data_sources(db, status="active", source_type=source_type)
+    if sources and sources[0].get("endpoint"):
+        return sources[0]["endpoint"].rstrip("/")
+    return None
+
+
+async def _handle_query_jira(db: aiosqlite.Connection, input: dict) -> dict:
+    endpoint = await _resolve_endpoint(db, "jira")
+    if not endpoint:
+        return {"error": "No active Jira data source configured. Add one in Intelligence Settings."}
+
+    jql = input["jql"]
+    fields = input.get("fields", "key,summary,status,issuetype,priority,created")
+    max_results = min(input.get("max_results", 20), 50)
+
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=15) as client:
+            resp = await client.get(
+                f"{endpoint}/rest/api/2/search",
+                params={"jql": jql, "fields": fields, "maxResults": max_results},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.HTTPStatusError as e:
+        return {"error": f"Jira returned {e.response.status_code}: {e.response.text[:200]}"}
+    except Exception as e:
+        return {"error": f"Failed to reach Jira at {endpoint}: {e}"}
+
+    issues = []
+    for issue in data.get("issues", []):
+        f = issue.get("fields", {})
+        issues.append({
+            "key": issue["key"],
+            "summary": f.get("summary"),
+            "status": f.get("status", {}).get("name") if isinstance(f.get("status"), dict) else f.get("status"),
+            "issuetype": f.get("issuetype", {}).get("name") if isinstance(f.get("issuetype"), dict) else f.get("issuetype"),
+            "priority": f.get("priority", {}).get("name") if isinstance(f.get("priority"), dict) else f.get("priority"),
+            "created": f.get("created"),
+        })
+    return {"issues": issues, "total": data.get("total", 0), "count": len(issues)}
+
+
+async def _handle_query_mlflow(db: aiosqlite.Connection, input: dict) -> dict:
+    endpoint = await _resolve_endpoint(db, "mlflow")
+    if not endpoint:
+        return {"error": "No active MLflow data source configured. Add one in Intelligence Settings."}
+
+    action = input["action"]
+    max_results = min(input.get("max_results", 20), 100)
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            if action == "search_experiments":
+                resp = await client.post(
+                    f"{endpoint}/api/2.0/mlflow/experiments/search",
+                    json={"max_results": max_results},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                experiments = data.get("experiments", [])
+                name_filter = input.get("experiment_name", "").lower()
+                if name_filter:
+                    experiments = [e for e in experiments if name_filter in e.get("name", "").lower()]
+                return {
+                    "experiments": [
+                        {"experiment_id": e.get("experiment_id"), "name": e.get("name"), "lifecycle_stage": e.get("lifecycle_stage")}
+                        for e in experiments[:max_results]
+                    ],
+                    "count": len(experiments),
+                }
+
+            elif action == "search_runs":
+                body: dict = {"max_results": max_results}
+                exp_name = input.get("experiment_name")
+                if exp_name:
+                    exp_resp = await client.post(
+                        f"{endpoint}/api/2.0/mlflow/experiments/search",
+                        json={"max_results": 1000},
+                    )
+                    exp_resp.raise_for_status()
+                    exp_ids = [
+                        e["experiment_id"]
+                        for e in exp_resp.json().get("experiments", [])
+                        if exp_name.lower() in e.get("name", "").lower()
+                    ]
+                    if not exp_ids:
+                        return {"runs": [], "count": 0, "error": f"No experiments matching '{exp_name}'"}
+                    body["experiment_ids"] = exp_ids
+                if input.get("filter_string"):
+                    body["filter"] = input["filter_string"]
+                resp = await client.post(
+                    f"{endpoint}/api/2.0/mlflow/runs/search",
+                    json=body,
+                )
+                resp.raise_for_status()
+                runs = resp.json().get("runs", [])
+                return {
+                    "runs": [
+                        {
+                            "run_id": r.get("info", {}).get("run_id"),
+                            "experiment_id": r.get("info", {}).get("experiment_id"),
+                            "status": r.get("info", {}).get("status"),
+                            "start_time": r.get("info", {}).get("start_time"),
+                            "end_time": r.get("info", {}).get("end_time"),
+                            "metrics": {m["key"]: m["value"] for m in r.get("data", {}).get("metrics", [])},
+                            "params": {p["key"]: p["value"] for p in r.get("data", {}).get("params", [])},
+                        }
+                        for r in runs[:max_results]
+                    ],
+                    "count": len(runs),
+                }
+
+            elif action == "get_run":
+                run_id = input.get("run_id")
+                if not run_id:
+                    return {"error": "run_id is required for get_run action"}
+                resp = await client.get(
+                    f"{endpoint}/api/2.0/mlflow/runs/get",
+                    params={"run_id": run_id},
+                )
+                resp.raise_for_status()
+                run = resp.json().get("run", {})
+                return {
+                    "run": {
+                        "run_id": run.get("info", {}).get("run_id"),
+                        "experiment_id": run.get("info", {}).get("experiment_id"),
+                        "status": run.get("info", {}).get("status"),
+                        "start_time": run.get("info", {}).get("start_time"),
+                        "end_time": run.get("info", {}).get("end_time"),
+                        "metrics": {m["key"]: m["value"] for m in run.get("data", {}).get("metrics", [])},
+                        "params": {p["key"]: p["value"] for p in run.get("data", {}).get("params", [])},
+                    }
+                }
+
+            else:
+                return {"error": f"Unknown action: {action}. Use search_experiments, search_runs, or get_run."}
+
+    except httpx.HTTPStatusError as e:
+        return {"error": f"MLflow returned {e.response.status_code}: {e.response.text[:200]}"}
+    except Exception as e:
+        return {"error": f"Failed to reach MLflow at {endpoint}: {e}"}
+
+
 async def _handle_query_data_sources(db: aiosqlite.Connection, input: dict) -> dict:
     sources = await ds_crud.list_data_sources(
         db,
@@ -375,6 +553,8 @@ _TOOL_HANDLERS = {
     "kb_get": _handle_kb_get,
     "kb_suggest": _handle_kb_suggest,
     "query_data_sources": _handle_query_data_sources,
+    "query_jira": _handle_query_jira,
+    "query_mlflow": _handle_query_mlflow,
 }
 
 
