@@ -211,6 +211,23 @@ TOOL_DEFINITIONS: list[dict] = [
         },
     },
     {
+        "name": "parse_strace",
+        "description": "Parse Linux strace output files to extract structured syscall data. Much faster than grepping strace files manually. Use this for questions about file accesses, commands run, processes spawned, or network connections during a pipeline job.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Path to a strace file or directory of strace files (e.g. /app/artifacts/strace/rfe-speedrun-RHAIRFE-2343)"},
+                "query": {
+                    "type": "string",
+                    "enum": ["files_accessed", "files_written", "execve", "clone", "failed_opens", "network", "summary"],
+                    "description": "What to extract: files_accessed (reads), files_written (writes), execve (commands), clone (process/thread spawns), failed_opens (ENOENT etc), network (connections), summary (syscall counts)",
+                },
+                "filter": {"type": "string", "description": "Optional substring to filter results (e.g. 'architecture-context' to show only matching paths)"},
+            },
+            "required": ["path", "query"],
+        },
+    },
+    {
         "name": "query_mlflow",
         "description": "Query the configured MLflow tracking server. Search experiments, list runs, or get run metrics. Use this to answer questions about ML experiments, model training, token usage, and costs.",
         "input_schema": {
@@ -639,6 +656,36 @@ async def _handle_search_files(_db: aiosqlite.Connection, input: dict) -> dict:
     }
 
 
+async def _handle_parse_strace(_db: aiosqlite.Connection, input: dict) -> dict:
+    from backend.chat.strace_parser import parse_strace_path
+
+    try:
+        target = _validate_path(input["path"])
+    except ValueError as e:
+        return {"error": str(e)}
+
+    if not target.exists():
+        return {"error": f"Path not found: {input['path']}"}
+
+    result = parse_strace_path(target, input["query"])
+
+    filt = input.get("filter")
+    if filt and "error" not in result:
+        for key in ("files", "commands", "connections", "clones"):
+            if key not in result:
+                continue
+            items = result[key]
+            filtered = [
+                item for item in items
+                if filt in json.dumps(item, default=str)
+            ]
+            result[key] = filtered
+            result["count"] = len(filtered)
+            result["filter_applied"] = filt
+
+    return result
+
+
 async def _resolve_endpoint(db: aiosqlite.Connection, source_type: str) -> str | None:
     sources = await ds_crud.list_data_sources(db, status="active", source_type=source_type)
     if sources and sources[0].get("endpoint"):
@@ -820,6 +867,7 @@ _TOOL_HANDLERS = {
     "read_file": _handle_read_file,
     "search_files": _handle_search_files,
     "file_stats": _handle_file_stats,
+    "parse_strace": _handle_parse_strace,
 }
 
 
