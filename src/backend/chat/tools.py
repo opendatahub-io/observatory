@@ -173,11 +173,24 @@ TOOL_DEFINITIONS: list[dict] = [
     },
     {
         "name": "read_file",
-        "description": "Read the contents of a file. Restricted to allowed directories (/app/.context, /app/artifacts). Returns the first 10KB of text content.",
+        "description": "Read the contents of a file. Restricted to allowed directories. Returns up to 10KB by default. Use start_line/end_line to read specific sections of large files (e.g. after finding a line with search_files).",
         "input_schema": {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "File path to read. Examples: /app/.context/architecture-context/README.md, /app/artifacts/strace/rfe-speedrun-RHAIRFE-2343/trace.log"},
+                "start_line": {"type": "integer", "description": "First line to read (1-based). Omit to start from beginning."},
+                "end_line": {"type": "integer", "description": "Last line to read (inclusive). Omit to read until 10KB cap."},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "file_stats",
+        "description": "Get size, line count, and modification time of a file or directory without reading its content. Useful for checking file size before reading, or getting directory entry counts.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File or directory path to stat"},
             },
             "required": ["path"],
         },
@@ -483,8 +496,39 @@ async def _handle_read_file(_db: aiosqlite.Connection, input: dict) -> dict:
         return {"error": f"Not a file: {input['path']}. Use browse_files to list directories."}
 
     size = target.stat().st_size
+    start_line = input.get("start_line")
+    end_line = input.get("end_line")
+
     try:
-        content = target.read_text(errors="replace")[:_MAX_FILE_SIZE]
+        if start_line or end_line:
+            s = (start_line or 1) - 1
+            e = end_line
+            with open(target, "r", errors="replace") as f:
+                lines = []
+                total_chars = 0
+                for i, line in enumerate(f):
+                    if i < s:
+                        continue
+                    if e and i >= e:
+                        break
+                    if total_chars + len(line) > _MAX_FILE_SIZE:
+                        lines.append("... [truncated at 10KB cap]")
+                        break
+                    lines.append(line)
+                    total_chars += len(line)
+            content = "".join(lines)
+            truncated = (e is not None and e < size) or total_chars >= _MAX_FILE_SIZE
+            return {
+                "path": str(target),
+                "size": size,
+                "start_line": s + 1,
+                "end_line": e or (s + len(lines)),
+                "lines_returned": len(lines),
+                "truncated": truncated,
+                "content": content,
+            }
+        else:
+            content = target.read_text(errors="replace")[:_MAX_FILE_SIZE]
     except Exception as e:
         return {"error": f"Could not read file: {e}"}
 
@@ -495,6 +539,44 @@ async def _handle_read_file(_db: aiosqlite.Connection, input: dict) -> dict:
         "truncated": truncated,
         "content": content,
     }
+
+
+async def _handle_file_stats(_db: aiosqlite.Connection, input: dict) -> dict:
+    try:
+        target = _validate_path(input["path"])
+    except ValueError as e:
+        return {"error": str(e)}
+
+    if not target.exists():
+        return {"error": f"Path not found: {input['path']}"}
+
+    stat = target.stat()
+    result = {
+        "path": str(target),
+        "type": "dir" if target.is_dir() else "file",
+        "size_bytes": stat.st_size,
+        "modified": str(os.path.getmtime(target)),
+    }
+
+    if target.is_file():
+        try:
+            with open(target, "r", errors="replace") as f:
+                result["line_count"] = sum(1 for _ in f)
+        except Exception:
+            result["line_count"] = None
+        if stat.st_size > 1024 * 1024:
+            result["size_human"] = f"{stat.st_size / (1024*1024):.1f}MB"
+        elif stat.st_size > 1024:
+            result["size_human"] = f"{stat.st_size / 1024:.1f}KB"
+        else:
+            result["size_human"] = f"{stat.st_size}B"
+    elif target.is_dir():
+        entries = list(target.iterdir())
+        result["entry_count"] = len(entries)
+        result["files"] = sum(1 for e in entries if e.is_file())
+        result["dirs"] = sum(1 for e in entries if e.is_dir())
+
+    return result
 
 
 async def _handle_search_files(_db: aiosqlite.Connection, input: dict) -> dict:
@@ -737,6 +819,7 @@ _TOOL_HANDLERS = {
     "browse_files": _handle_browse_files,
     "read_file": _handle_read_file,
     "search_files": _handle_search_files,
+    "file_stats": _handle_file_stats,
 }
 
 
