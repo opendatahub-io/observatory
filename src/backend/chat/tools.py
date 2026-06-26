@@ -183,6 +183,21 @@ TOOL_DEFINITIONS: list[dict] = [
         },
     },
     {
+        "name": "search_files",
+        "description": "Search for text patterns in files using grep. Restricted to allowed directories. Returns matching lines with file paths and line numbers. Use this to find specific content across many files without reading each one individually.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Text or regex pattern to search for (case-insensitive by default)"},
+                "path": {"type": "string", "description": "Directory to search in. Examples: /app/artifacts/strace, /app/.context"},
+                "glob": {"type": "string", "description": "File glob to filter (e.g. '*.yaml', '*.md', '*.log'). Omit to search all files."},
+                "case_sensitive": {"type": "boolean", "description": "If true, search is case-sensitive", "default": False},
+                "max_results": {"type": "integer", "description": "Maximum number of matching lines to return (default 50, max 100)", "default": 50},
+            },
+            "required": ["pattern", "path"],
+        },
+    },
+    {
         "name": "query_mlflow",
         "description": "Query the configured MLflow tracking server. Search experiments, list runs, or get run metrics. Use this to answer questions about ML experiments, model training, token usage, and costs.",
         "input_schema": {
@@ -482,6 +497,66 @@ async def _handle_read_file(_db: aiosqlite.Connection, input: dict) -> dict:
     }
 
 
+async def _handle_search_files(_db: aiosqlite.Connection, input: dict) -> dict:
+    try:
+        target = _validate_path(input["path"])
+    except ValueError as e:
+        return {"error": str(e)}
+
+    if not target.exists():
+        return {"error": f"Path not found: {input['path']}"}
+    if not target.is_dir():
+        return {"error": f"Not a directory: {input['path']}"}
+
+    import re
+    import subprocess
+
+    pattern = input["pattern"]
+    max_results = min(input.get("max_results", 50), 100)
+    case_sensitive = input.get("case_sensitive", False)
+
+    cmd = ["grep", "-rn", "--binary-files=without-match"]
+    if not case_sensitive:
+        cmd.append("-i")
+    if input.get("glob"):
+        cmd.extend(["--include", input["glob"]])
+    cmd.extend(["-m", str(max_results * 3), "--", pattern, str(target)])
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=10,
+            errors="replace",
+        )
+    except subprocess.TimeoutExpired:
+        return {"error": "Search timed out after 10 seconds. Try a more specific pattern or narrower path."}
+
+    matches = []
+    for line in result.stdout.splitlines():
+        if len(matches) >= max_results:
+            break
+        sep = line.find(":")
+        if sep == -1:
+            continue
+        rest = line[sep + 1:]
+        sep2 = rest.find(":")
+        if sep2 == -1:
+            continue
+        file_path = line[:sep]
+        line_no = rest[:sep2]
+        content = rest[sep2 + 1:]
+        if len(content) > 200:
+            content = content[:200] + "..."
+        matches.append({"file": file_path, "line": int(line_no), "text": content.strip()})
+
+    return {
+        "pattern": pattern,
+        "directory": str(target),
+        "matches": matches,
+        "count": len(matches),
+        "capped": len(result.stdout.splitlines()) > max_results,
+    }
+
+
 async def _resolve_endpoint(db: aiosqlite.Connection, source_type: str) -> str | None:
     sources = await ds_crud.list_data_sources(db, status="active", source_type=source_type)
     if sources and sources[0].get("endpoint"):
@@ -661,6 +736,7 @@ _TOOL_HANDLERS = {
     "query_mlflow": _handle_query_mlflow,
     "browse_files": _handle_browse_files,
     "read_file": _handle_read_file,
+    "search_files": _handle_search_files,
 }
 
 
