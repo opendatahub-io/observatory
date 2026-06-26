@@ -165,7 +165,7 @@ TOOL_DEFINITIONS: list[dict] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Directory path to list (e.g. /app/.context or /app/artifacts/claims)"},
+                "path": {"type": "string", "description": "Directory path to list. Examples: /app/.context, /app/artifacts/strace, /app/artifacts/strace/rfe-speedrun-RHAIRFE-2343"},
                 "recursive": {"type": "boolean", "description": "If true, list all files recursively (max 200 entries)", "default": False},
             },
             "required": ["path"],
@@ -177,7 +177,7 @@ TOOL_DEFINITIONS: list[dict] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path to read (e.g. /app/.context/architecture-context/README.md)"},
+                "path": {"type": "string", "description": "File path to read. Examples: /app/.context/architecture-context/README.md, /app/artifacts/strace/rfe-speedrun-RHAIRFE-2343/trace.log"},
             },
             "required": ["path"],
         },

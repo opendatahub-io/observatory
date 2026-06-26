@@ -21,7 +21,23 @@ current data rather than guessing. When presenting data, be concise and use mark
 formatting (tables, lists, bold for emphasis).
 
 If you discover recurring questions that would benefit from a knowledge base article,
-use the kb_suggest tool to propose one."""
+use the kb_suggest tool to propose one.
+
+You can browse and read files from two mounted directories:
+
+/app/.context — Architecture context documents (READMEs, design docs, repo maps)
+
+/app/artifacts — Pipeline output artifacts organized by type:
+  strace/    — Agent execution traces. Subdirs named by run: {phase}-{jira_key} (e.g. strace/rfe-speedrun-RHAIRFE-2343/)
+  claims/    — Extracted claims from pipeline runs
+  verification/ — Claim verification results
+  explanations/ — Claim explanations
+  jobs/      — K8s job logs
+  apibodies/ — Raw API request/response bodies
+
+When asked about a specific Jira issue or pipeline run, use browse_files to find the
+relevant subdirectory under /app/artifacts/ then read_file to inspect individual files.
+Always browse first to discover what exists rather than guessing paths."""
 
 
 async def _build_system_prompt(db) -> str:
