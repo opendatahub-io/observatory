@@ -166,14 +166,14 @@ TOOL_DEFINITIONS: list[dict] = [
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Directory path to list. Examples: /app/.context, /app/artifacts/strace, /app/artifacts/strace/rfe-speedrun-RHAIRFE-2343"},
-                "recursive": {"type": "boolean", "description": "If true, list all files recursively (max 200 entries)", "default": False},
+                "recursive": {"type": "boolean", "description": "If true, list all files recursively (max 100 entries). Prefer non-recursive browsing and drill into subdirectories.", "default": False},
             },
             "required": ["path"],
         },
     },
     {
         "name": "read_file",
-        "description": "Read the contents of a file. Restricted to allowed directories (/app/.context, /app/artifacts). Returns the first 50KB of text content.",
+        "description": "Read the contents of a file. Restricted to allowed directories (/app/.context, /app/artifacts). Returns the first 10KB of text content.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -403,16 +403,22 @@ async def _handle_kb_suggest(db: aiosqlite.Connection, input: dict) -> dict:
     return {"article": article, "message": "Article suggested for operator review"}
 
 
-_ALLOWED_ROOTS = [Path("/app/.context"), Path("/app/artifacts")]
-_MAX_FILE_SIZE = 50 * 1024
+_MAX_FILE_SIZE = 10 * 1024
+_MAX_BROWSE_ENTRIES = 100
+
+
+def _get_allowed_roots() -> list[Path]:
+    from backend.config import settings
+    return [Path(p.strip()) for p in settings.chat_browse_roots.split(",") if p.strip()]
 
 
 def _validate_path(raw: str) -> Path:
     resolved = Path(raw).resolve()
-    if not any(resolved == root or root in resolved.parents for root in _ALLOWED_ROOTS):
+    allowed = _get_allowed_roots()
+    if not any(resolved == root or root in resolved.parents for root in allowed):
         raise ValueError(
             f"Access denied: {raw} is outside allowed directories "
-            f"({', '.join(str(r) for r in _ALLOWED_ROOTS)})"
+            f"({', '.join(str(r) for r in allowed)})"
         )
     return resolved
 
@@ -431,7 +437,7 @@ async def _handle_browse_files(_db: aiosqlite.Connection, input: dict) -> dict:
     entries = []
     if input.get("recursive"):
         for p in sorted(target.rglob("*")):
-            if len(entries) >= 200:
+            if len(entries) >= _MAX_BROWSE_ENTRIES:
                 break
             entries.append({
                 "path": str(p),

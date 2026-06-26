@@ -6,6 +6,8 @@ from collections.abc import AsyncIterator
 import aiosqlite
 import anthropic
 
+from pathlib import Path
+
 from backend.chat.tools import TOOL_DEFINITIONS, execute_tool
 from backend.config import settings
 from backend.crud.data_sources import get_active_sources_summary
@@ -23,27 +25,39 @@ formatting (tables, lists, bold for emphasis).
 If you discover recurring questions that would benefit from a knowledge base article,
 use the kb_suggest tool to propose one.
 
-You can browse and read files from two mounted directories:
+You have browse_files and read_file tools for exploring mounted directories.
+IMPORTANT: Always call browse_files FIRST to discover what directories and files
+actually exist. Never assume a path exists — verify by browsing. Start from the
+top-level allowed roots and drill down.
 
-/app/.context — Architecture context documents (READMEs, design docs, repo maps)
-
-/app/artifacts — Pipeline output artifacts organized by type:
-  strace/    — Agent execution traces. Subdirs named by run: {phase}-{jira_key} (e.g. strace/rfe-speedrun-RHAIRFE-2343/)
+Known artifact directory conventions (subdirs may or may not be present):
+  strace/    — Agent execution traces. Subdirs named: {phase}-{jira_key} (e.g. strace/rfe-speedrun-RHAIRFE-2343/)
   claims/    — Extracted claims from pipeline runs
   verification/ — Claim verification results
   explanations/ — Claim explanations
   jobs/      — K8s job logs
-  apibodies/ — Raw API request/response bodies
-
-When asked about a specific Jira issue or pipeline run, use browse_files to find the
-relevant subdirectory under /app/artifacts/ then read_file to inspect individual files.
-Always browse first to discover what exists rather than guessing paths."""
+  apibodies/ — Raw API request/response bodies"""
 
 
 async def _build_system_prompt(db) -> str:
+    prompt = _BASE_SYSTEM_PROMPT
+
+    roots = [p.strip() for p in settings.chat_browse_roots.split(",") if p.strip()]
+    existing = [r for r in roots if Path(r).is_dir()]
+    if existing:
+        prompt += "\n\nAllowed browse/read directories (confirmed present on disk):\n"
+        prompt += "\n".join(f"  - {r}" for r in existing)
+        missing = [r for r in roots if r not in existing]
+        if missing:
+            prompt += "\n\nConfigured but NOT present on disk (do not try to browse):\n"
+            prompt += "\n".join(f"  - {r}" for r in missing)
+    elif roots:
+        prompt += "\n\nNote: No configured browse directories exist on disk yet. "
+        prompt += f"Configured roots: {', '.join(roots)}"
+
     sources = await get_active_sources_summary(db)
     if not sources:
-        return _BASE_SYSTEM_PROMPT
+        return prompt
     lines = []
     for s in sources:
         parts = [f"- **{s['name']}** ({s['source_type']})"]
@@ -58,9 +72,10 @@ async def _build_system_prompt(db) -> str:
         + "\n\nUse the query_data_sources tool for full details. Reference these "
         "sources by name when users ask about external systems."
     )
-    return _BASE_SYSTEM_PROMPT + supplement
+    return prompt + supplement
 
 MAX_TOOL_ROUNDS = 10
+MAX_TOOL_RESULT_CHARS = 15_000
 
 
 def _get_client() -> anthropic.AsyncAnthropic:
@@ -123,6 +138,12 @@ async def stream_chat_response(
         for block in tool_use_blocks:
             yield {"event": "tool_use", "data": {"tool": block.name, "input": block.input}}
             result_str = await execute_tool(db, block.name, block.input)
+            truncated = len(result_str) > MAX_TOOL_RESULT_CHARS
+            if truncated:
+                result_str = json.dumps({
+                    "error": "Result truncated — too large for chat context",
+                    "preview": result_str[:MAX_TOOL_RESULT_CHARS],
+                })
             result_data = json.loads(result_str)
             yield {"event": "tool_result", "data": {"tool": block.name, "result": result_data}}
             tool_results.append(

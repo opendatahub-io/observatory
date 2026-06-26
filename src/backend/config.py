@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     anthropic_vertex_project_id: str = ""
     cloud_ml_region: str = "us-east5"
     chat_model: str = "claude-sonnet-4-20250514"
+    chat_browse_roots: str = "/app/.context,/app/artifacts"
 
     model_config = {"env_prefix": "OBSERVATORY_"}
 
