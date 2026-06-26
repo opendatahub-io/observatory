@@ -25,6 +25,10 @@ formatting (tables, lists, bold for emphasis).
 If you discover recurring questions that would benefit from a knowledge base article,
 use the kb_suggest tool to propose one.
 
+You have a limited number of tool-use rounds per response. Plan your tool calls
+efficiently — combine what you can, avoid redundant searches, and synthesize your
+answer as soon as you have enough data rather than exhaustively searching.
+
 You have browse_files and read_file tools for exploring mounted directories.
 IMPORTANT: Always call browse_files FIRST to discover what directories and files
 actually exist. Never assume a path exists — verify by browsing. Start from the
@@ -74,7 +78,7 @@ async def _build_system_prompt(db) -> str:
     )
     return prompt + supplement
 
-MAX_TOOL_ROUNDS = 10
+MAX_TOOL_ROUNDS = 15
 MAX_TOOL_RESULT_CHARS = 15_000
 
 
@@ -152,7 +156,35 @@ async def stream_chat_response(
 
         api_messages.append({"role": "user", "content": tool_results})
 
-    yield {"event": "message_end", "data": {"usage": {}}}
+    api_messages.append({
+        "role": "user",
+        "content": (
+            "[SYSTEM: Tool-use round limit reached. You MUST now provide your "
+            "final answer using the data you have already collected. Do NOT "
+            "request any more tool calls. Summarize your findings clearly.]"
+        ),
+    })
+    async with client.messages.stream(
+        model=settings.chat_model,
+        max_tokens=4096,
+        system=system_prompt,
+        messages=api_messages,
+    ) as stream:
+        async for event in stream:
+            if event.type == "content_block_delta":
+                if event.delta.type == "text_delta":
+                    yield {"event": "content_delta", "data": {"text": event.delta.text}}
+        final = await stream.get_final_message()
+
+    yield {
+        "event": "message_end",
+        "data": {
+            "usage": {
+                "input_tokens": final.usage.input_tokens,
+                "output_tokens": final.usage.output_tokens,
+            }
+        },
+    }
 
 
 def _to_api_messages(messages: list[dict]) -> list[dict]:
