@@ -78,7 +78,7 @@ async def _build_system_prompt(db) -> str:
     )
     return prompt + supplement
 
-MAX_TOOL_ROUNDS = 15
+MAX_TOOL_ROUNDS = 50
 MAX_TOOL_RESULT_CHARS = 15_000
 
 
