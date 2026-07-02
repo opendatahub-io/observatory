@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends
 
 import backend.config
 from backend.database import get_db
-from backend.jobs.retention import purge_old_data
+from backend.jobs.retention import purge_old_data, wipe_runtime_data
 from backend.seed import load_org_pulse_config, load_seed_data, seed_database
 
 log = logging.getLogger(__name__)
@@ -55,6 +55,13 @@ async def db_health(db: aiosqlite.Connection = Depends(get_db)):
 async def run_purge(db: aiosqlite.Connection = Depends(get_db)):
     """Run the data retention purge and return counts of deleted rows."""
     counts = await purge_old_data(db)
+    return counts
+
+
+@router.post("/wipe-runtime-data")
+async def run_runtime_data_wipe(db: aiosqlite.Connection = Depends(get_db)):
+    """Delete all collected/runtime data regardless of retention settings."""
+    counts = await wipe_runtime_data(db)
     return counts
 
 

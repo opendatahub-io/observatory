@@ -174,6 +174,8 @@ async def test_purge_nothing_to_delete(client):
 
     assert counts == {
         "telemetry_spans": 0,
+        "otel_log_records": 0,
+        "otel_metric_points": 0,
         "run_commands": 0,
         "run_packages": 0,
         "run_containers": 0,

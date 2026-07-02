@@ -43,6 +43,8 @@ interface PurgeResult {
   run_containers: number;
 }
 
+type TableCountResult = Record<string, number>;
+
 interface ApiKey {
   id: number;
   key_prefix: string;
@@ -254,6 +256,8 @@ function Admin() {
   /* ---------- Purge state ---------- */
   const [purging, setPurging] = useState(false);
   const [purgeResult, setPurgeResult] = useState<PurgeResult | null>(null);
+  const [wipingRuntimeData, setWipingRuntimeData] = useState(false);
+  const [runtimeWipeResult, setRuntimeWipeResult] = useState<TableCountResult | null>(null);
 
   /* ---------- Claims clear state ---------- */
   const [clearingClaims, setClearingClaims] = useState(false);
@@ -521,6 +525,27 @@ function Admin() {
       // Silently ignore
     } finally {
       setPurging(false);
+    }
+  };
+
+  const handleRuntimeDataWipe = async () => {
+    const confirmation = window.prompt(
+      "This deletes all collected runtime data regardless of retention settings. Type WIPE to continue."
+    );
+    if (confirmation !== "WIPE") return;
+
+    setWipingRuntimeData(true);
+    setRuntimeWipeResult(null);
+    try {
+      const res = await fetch("/api/admin/wipe-runtime-data", { method: "POST" });
+      if (res.ok) {
+        setRuntimeWipeResult(await res.json());
+        void fetchDbHealth();
+      }
+    } catch {
+      // Silently ignore
+    } finally {
+      setWipingRuntimeData(false);
     }
   };
 
@@ -1031,6 +1056,10 @@ function Admin() {
           </tbody>
         </table>
 
+        <p className="mt-3 text-sm text-gray-600 dark:text-gray-300">
+          Retention purge only deletes rows older than their retention windows.
+        </p>
+
         <div className="flex items-center gap-4 mt-4">
           <button
             className={`${tw.btn} ${tw.btnDanger}`}
@@ -1046,6 +1075,22 @@ function Admin() {
               {purgeResult.run_commands} commands,{" "}
               {purgeResult.run_packages} packages,{" "}
               {purgeResult.run_containers} containers
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center gap-4 mt-4">
+          <button
+            className={`${tw.btn} ${tw.btnDanger}`}
+            onClick={() => void handleRuntimeDataWipe()}
+            disabled={wipingRuntimeData}
+          >
+            {wipingRuntimeData ? "Wiping..." : "Wipe All Runtime Data"}
+          </button>
+
+          {runtimeWipeResult && (
+            <span className="text-sm text-emerald-600 dark:text-emerald-400">
+              Deleted {Object.values(runtimeWipeResult).reduce((sum, count) => sum + count, 0)} rows
             </span>
           )}
         </div>

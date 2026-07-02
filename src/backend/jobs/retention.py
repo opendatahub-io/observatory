@@ -11,6 +11,44 @@ logger = logging.getLogger(__name__)
 TELEMETRY_SPANS_RETENTION_DAYS = 90
 PROVENANCE_RETENTION_DAYS = 180  # run_commands, run_packages, run_containers
 
+RUNTIME_DATA_TABLES = [
+    "claim_explanations",
+    "claim_verdicts",
+    "claim_jira_keys",
+    "claim_sources",
+    "claims",
+    "sbom_vulnerabilities",
+    "container_sboms",
+    "trace_metadata",
+    "trace_packages",
+    "trace_events",
+    "job_artifacts",
+    "telemetry_dimensions",
+    "otel_metric_points",
+    "otel_log_records",
+    "telemetry_summaries",
+    "telemetry_spans",
+    "run_commands",
+    "run_packages",
+    "run_containers",
+    "mlflow_metrics",
+    "mlflow_params",
+    "mlflow_runs",
+    "mlflow_experiments",
+    "ci_job_scripts",
+    "ci_job_variables",
+    "ci_job_tags",
+    "ci_jobs",
+    "ci_includes",
+    "collector_state",
+    "chat_messages",
+    "chat_conversations",
+    "kb_articles",
+    "kb_categories",
+    "data_sources",
+    "pipeline_runs",
+]
+
 
 async def purge_old_data(db: aiosqlite.Connection) -> dict:
     """Purge data older than retention thresholds. Returns counts of deleted rows."""
@@ -71,5 +109,25 @@ async def purge_old_data(db: aiosqlite.Connection) -> dict:
         logger.info("Retention purge: nothing to delete")
     else:
         logger.info("Retention purge complete: %d total rows deleted", total)
+
+    return counts
+
+
+async def wipe_runtime_data(db: aiosqlite.Connection) -> dict[str, int]:
+    """Delete collected/runtime data while preserving configuration and credentials."""
+    counts: dict[str, int] = {}
+
+    for table in RUNTIME_DATA_TABLES:
+        cursor = await db.execute(f"SELECT COUNT(*) FROM {table}")  # noqa: S608
+        counts[table] = (await cursor.fetchone())[0]
+        await db.execute(f"DELETE FROM {table}")  # noqa: S608
+
+    await db.commit()
+
+    total = sum(counts.values())
+    if total == 0:
+        logger.info("Runtime data wipe: nothing to delete")
+    else:
+        logger.info("Runtime data wipe complete: %d total rows deleted", total)
 
     return counts

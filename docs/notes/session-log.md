@@ -18,3 +18,20 @@ Discovered:
 
 Next:
 - Begin Phase 1 implementation when ready
+
+
+## 2026-07-02
+
+Agent: codex
+
+Completed:
+- Added Admin full runtime data wipe endpoint and UI action.
+- Preserved pipeline configuration, pipeline metadata, API keys, and platform credentials during wipe.
+- Added API coverage for runtime deletion and configuration preservation.
+
+Discovered:
+- Existing retention purge is age-based and still returns OTEL log/metric counts; updated stale retention test expectation.
+
+Validation:
+- uv run pytest src/tests/test_admin_api.py src/tests/test_retention.py
+- npm --prefix src/frontend run build
