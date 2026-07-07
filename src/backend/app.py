@@ -32,6 +32,9 @@ from backend.routers.ci_definitions import router as ci_definitions_router
 from backend.routers.hallucinations import router as hallucinations_router
 from backend.routers.traces import router as traces_router
 from backend.routers.otel_explorer import router as otel_explorer_router
+from backend.routers.kb import router as kb_router
+from backend.routers.chat import router as chat_router
+from backend.routers.data_sources import router as data_sources_router
 
 # Attach the ring-buffer log handler to collector and credential loggers
 _collector_logger = logging.getLogger("backend.collector")
@@ -92,6 +95,9 @@ app.include_router(ci_definitions_router)
 app.include_router(hallucinations_router)
 app.include_router(traces_router)
 app.include_router(otel_explorer_router)
+app.include_router(kb_router)
+app.include_router(chat_router)
+app.include_router(data_sources_router)
 
 static_dir = Path(backend.config.settings.static_dir)
 if static_dir.is_dir():

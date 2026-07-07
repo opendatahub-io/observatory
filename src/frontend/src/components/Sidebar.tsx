@@ -12,6 +12,9 @@ import {
   Settings,
   ChevronLeft,
   ChevronRight,
+  MessageSquare,
+  BookOpen,
+  Settings2,
 } from "lucide-react";
 
 interface NavItem {
@@ -42,6 +45,14 @@ const NAV_SECTIONS: NavSection[] = [
       { to: "/hallucinations", label: "Hallucinations", icon: AlertTriangle },
       { to: "/agent-traces", label: "Traces", icon: Workflow },
       { to: "/otel-explorer", label: "OTEL Explorer", icon: Radio },
+    ],
+  },
+  {
+    label: "Intelligence",
+    items: [
+      { to: "/chat", label: "Chat", icon: MessageSquare },
+      { to: "/knowledge-base", label: "Knowledge Base", icon: BookOpen },
+      { to: "/intelligence-settings", label: "Settings", icon: Settings2 },
     ],
   },
   {

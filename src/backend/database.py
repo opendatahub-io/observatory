@@ -446,11 +446,86 @@ CREATE TABLE IF NOT EXISTS platform_credentials (
     last_used_at TIMESTAMP,
     is_active BOOLEAN DEFAULT TRUE
 );
+
+-- Chat tables
+CREATE TABLE IF NOT EXISTS chat_conversations (
+    id TEXT PRIMARY KEY,
+    title TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool_use', 'tool_result')),
+    content TEXT NOT NULL,
+    metadata TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation ON chat_messages(conversation_id, created_at);
+
+-- Knowledge Base tables
+CREATE TABLE IF NOT EXISTS kb_categories (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS kb_articles (
+    id TEXT PRIMARY KEY,
+    category_id TEXT REFERENCES kb_categories(id) ON DELETE SET NULL,
+    title TEXT NOT NULL,
+    slug TEXT NOT NULL UNIQUE,
+    body TEXT NOT NULL,
+    tags TEXT,
+    status TEXT NOT NULL DEFAULT 'published' CHECK (status IN ('draft', 'published', 'archived')),
+    source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'agent_suggested', 'imported')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_kb_articles_category ON kb_articles(category_id);
+CREATE INDEX IF NOT EXISTS idx_kb_articles_status ON kb_articles(status);
+CREATE INDEX IF NOT EXISTS idx_kb_articles_slug ON kb_articles(slug);
+
+CREATE TABLE IF NOT EXISTS data_sources (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    endpoint TEXT,
+    description TEXT,
+    config TEXT DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
+    last_health_check TEXT,
+    last_health_status TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_data_sources_type ON data_sources(source_type);
+CREATE INDEX IF NOT EXISTS idx_data_sources_status ON data_sources(status);
 """
+
+
+async def _ensure_fts(db: aiosqlite.Connection) -> None:
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='kb_articles_fts'"
+    )
+    if not await cursor.fetchone():
+        await db.executescript(
+            """CREATE VIRTUAL TABLE kb_articles_fts USING fts5(
+                title, body, tags,
+                content='kb_articles',
+                content_rowid='rowid'
+            );"""
+        )
+        await db.commit()
 
 
 async def init_schema(db: aiosqlite.Connection) -> None:
     """Apply schema directly (for tests and first-run initialization)."""
     await db.executescript(_SCHEMA_SQL)
     await db.commit()
+    await _ensure_fts(db)
     await db.execute("PRAGMA foreign_keys=ON")
