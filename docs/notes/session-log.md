@@ -35,3 +35,27 @@ Discovered:
 Validation:
 - uv run pytest src/tests/test_admin_api.py src/tests/test_retention.py
 - npm --prefix src/frontend run build
+
+
+## 2026-07-12
+
+Agent: codex
+
+Completed:
+- Added additive claim-assurance persistence, idempotent legacy backfill, and
+  v2 APIs for extraction, verification, explanation, evidence, overrides,
+  regression runs, receipts, histories, and metrics.
+- Added element-level coverage and decontextualization comparison provenance.
+- Added the Claim Assurance UI with source decisions, occurrences, evidence,
+  version histories, improvement routes, overrides, and replay status.
+- Added a backup/rollback migration runbook and lifecycle API tests.
+
+Validation:
+- `pytest -q src/tests/test_claim_assurance.py src/tests/test_admin_api.py` — 9 passed
+- `ruff check` for changed backend/test files
+- `npm --prefix src/frontend run build`
+
+Discovered:
+- The broader checkout has unrelated existing failures in OTLP routing,
+  artifact parsing expectations, collector mocks, and stale seed-count tests;
+  focused legacy admin compatibility and claim-assurance suites pass.

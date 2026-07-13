@@ -15,6 +15,7 @@ import {
   MessageSquare,
   BookOpen,
   Settings2,
+  BadgeCheck,
 } from "lucide-react";
 
 interface NavItem {
@@ -43,6 +44,7 @@ const NAV_SECTIONS: NavSection[] = [
       { to: "/provenance", label: "Provenance", icon: Box },
       { to: "/vulnerabilities", label: "Vulnerabilities", icon: Shield },
       { to: "/hallucinations", label: "Hallucinations", icon: AlertTriangle },
+      { to: "/claim-assurance", label: "Claim Assurance", icon: BadgeCheck },
       { to: "/agent-traces", label: "Traces", icon: Workflow },
       { to: "/otel-explorer", label: "OTEL Explorer", icon: Radio },
     ],

@@ -35,6 +35,7 @@ from backend.routers.otel_explorer import router as otel_explorer_router
 from backend.routers.kb import router as kb_router
 from backend.routers.chat import router as chat_router
 from backend.routers.data_sources import router as data_sources_router
+from backend.routers.claim_assurance import router as claim_assurance_router
 
 # Attach the ring-buffer log handler to collector and credential loggers
 _collector_logger = logging.getLogger("backend.collector")
@@ -98,6 +99,7 @@ app.include_router(otel_explorer_router)
 app.include_router(kb_router)
 app.include_router(chat_router)
 app.include_router(data_sources_router)
+app.include_router(claim_assurance_router)
 
 static_dir = Path(backend.config.settings.static_dir)
 if static_dir.is_dir():

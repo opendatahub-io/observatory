@@ -31,9 +31,13 @@
 
 **Total estimate:** 22-28 days
 
+- [Phase 8: Claim Assurance and Improvement Loop](docs/plans/phase-08-claim-assurance.md)
+
 ---
 
 ## Active Tasks
+
+- [task-claim-assurance-loop.md](docs/tasks/done/task-claim-assurance-loop.md) — Claimify-aligned extraction assurance, provenance, and feedback loop (complete)
 
 ### M8: Hallucination Detection
 

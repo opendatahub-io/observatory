@@ -562,8 +562,27 @@ async def get_explanation_categories(db: aiosqlite.Connection) -> list[dict]:
 
 
 async def clear_all_claims(db: aiosqlite.Connection) -> dict:
-    """Delete all claims data (claims, sources, verdicts, explanations, jira keys)."""
-    tables = ["claim_explanations", "claim_verdicts", "claim_jira_keys", "claim_sources", "claims"]
+    """Delete legacy and versioned claim-assurance data."""
+    tables = [
+        "claim_evidence_records",
+        "claim_regression_runs",
+        "claim_stage_receipt_events",
+        "claim_human_overrides",
+        "claim_explanation_runs",
+        "claim_verification_runs",
+        "claim_coverage_elements",
+        "claim_extraction_evaluations",
+        "claim_occurrences",
+        "claim_ambiguity_results",
+        "claim_selection_results",
+        "claim_source_units",
+        "claim_extraction_runs",
+        "claim_explanations",
+        "claim_verdicts",
+        "claim_jira_keys",
+        "claim_sources",
+        "claims",
+    ]
     counts = {}
     for table in tables:
         cursor = await db.execute(f"SELECT COUNT(*) FROM {table}")  # noqa: S608
