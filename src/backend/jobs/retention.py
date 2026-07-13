@@ -20,6 +20,7 @@ RUNTIME_DATA_TABLES = [
     "claim_verification_runs",
     "claim_coverage_elements",
     "claim_extraction_evaluations",
+    "claim_occurrence_jira_keys",
     "claim_occurrences",
     "claim_ambiguity_results",
     "claim_selection_results",

@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 
 import aiosqlite
 
@@ -16,6 +17,13 @@ from backend.schemas.claim_assurance import (
 
 class ExtractionRunConflict(Exception):
     """A supposedly idempotent run key was reused for different content."""
+
+
+JIRA_KEY_PATTERN = re.compile(r"\b[A-Z][A-Z0-9]{1,20}-\d+\b")
+
+
+def _extract_jira_keys(value: str) -> set[str]:
+    return {match.group(0).upper() for match in JIRA_KEY_PATTERN.finditer(value)}
 
 
 def _digest(value: str) -> str:
@@ -124,6 +132,7 @@ async def create_extraction_run(db: aiosqlite.Connection, data: ExtractionRunInp
         ),
     )
     run_id = cursor.lastrowid
+    source_jira_keys = _extract_jira_keys(data.source_file)
     occurrence_ids: list[int] = []
     for unit in data.units:
         source = unit.source_unit
@@ -184,10 +193,18 @@ async def create_extraction_run(db: aiosqlite.Connection, data: ExtractionRunInp
             )
             occurrence_id = cursor.lastrowid
             occurrence_ids.append(occurrence_id)
-            for jira_key in claim.jira_keys:
+            jira_keys = source_jira_keys | {
+                jira_key.upper() for jira_key in claim.jira_keys
+            }
+            for jira_key in sorted(jira_keys):
                 await db.execute(
                     "INSERT OR IGNORE INTO claim_jira_keys (claim_id, jira_key) VALUES (?, ?)",
                     (claim_id, jira_key),
+                )
+                await db.execute(
+                    """INSERT OR IGNORE INTO claim_occurrence_jira_keys
+                       (claim_occurrence_id, jira_key) VALUES (?, ?)""",
+                    (occurrence_id, jira_key),
                 )
             if claim.evaluation:
                 evaluation = claim.evaluation
@@ -750,7 +767,8 @@ async def list_occurrences_for_verification(
     params: list[object] = []
     if jira_key:
         where.append(
-            "EXISTS (SELECT 1 FROM claim_jira_keys cjk WHERE cjk.claim_id = co.normalized_claim_id AND cjk.jira_key = ?)"
+            "EXISTS (SELECT 1 FROM claim_occurrence_jira_keys cojk "
+            "WHERE cojk.claim_occurrence_id = co.id AND cojk.jira_key = ?)"
         )
         params.append(jira_key.upper())
     if pending_only:

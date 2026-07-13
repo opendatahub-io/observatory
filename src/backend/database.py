@@ -465,6 +465,18 @@ CREATE TABLE IF NOT EXISTS claim_occurrences (
 CREATE INDEX IF NOT EXISTS idx_claim_occurrences_claim ON claim_occurrences(normalized_claim_id);
 CREATE INDEX IF NOT EXISTS idx_claim_occurrences_unit ON claim_occurrences(source_unit_id);
 
+CREATE TABLE IF NOT EXISTS claim_occurrence_jira_keys (
+    id INTEGER PRIMARY KEY,
+    claim_occurrence_id INTEGER NOT NULL
+      REFERENCES claim_occurrences(id) ON DELETE CASCADE,
+    jira_key TEXT NOT NULL,
+    UNIQUE(claim_occurrence_id, jira_key)
+);
+CREATE INDEX IF NOT EXISTS idx_claim_occurrence_jira_occurrence
+    ON claim_occurrence_jira_keys(claim_occurrence_id);
+CREATE INDEX IF NOT EXISTS idx_claim_occurrence_jira_key
+    ON claim_occurrence_jira_keys(jira_key);
+
 CREATE TABLE IF NOT EXISTS claim_extraction_evaluations (
     id INTEGER PRIMARY KEY,
     claim_occurrence_id INTEGER NOT NULL REFERENCES claim_occurrences(id) ON DELETE CASCADE,

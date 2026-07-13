@@ -67,6 +67,7 @@ def extraction_payload():
 
 
 async def test_ingest_extraction_run_is_idempotent(client, extraction_payload):
+    extraction_payload["units"][0]["claims"][0]["jira_keys"] = []
     response = await client.post("/api/v2/claims/extraction-runs", json=extraction_payload)
     assert response.status_code == 201
     result = response.json()
@@ -130,7 +131,9 @@ async def test_identical_text_keeps_distinct_source_occurrences(client, extracti
         {**extraction_payload["units"][0], "source_unit": {
             **extraction_payload["units"][0]["source_unit"],
             "unit_key": "unit-2", "source_locator": "security-review.md:9",
-        }}
+        }, "claims": [{
+            **extraction_payload["units"][0]["claims"][0], "jira_keys": [],
+        }]}
     ]
     second = (
         await client.post("/api/v2/claims/extraction-runs", json=second_payload)
@@ -150,6 +153,18 @@ async def test_identical_text_keeps_distinct_source_occurrences(client, extracti
         first_history["occurrence"]["normalized_claim_id"]
         == second_history["occurrence"]["normalized_claim_id"]
     )
+    first_issue = await client.get(
+        "/api/v2/claims/occurrences?jira_key=RFE-42&pending_only=false"
+    )
+    second_issue = await client.get(
+        "/api/v2/claims/occurrences?jira_key=RFE-43&pending_only=false"
+    )
+    assert [item["id"] for item in first_issue.json()["occurrences"]] == [
+        first["occurrence_ids"][0]
+    ]
+    assert [item["id"] for item in second_issue.json()["occurrences"]] == [
+        second["occurrence_ids"][0]
+    ]
 
 
 @pytest.mark.parametrize(
