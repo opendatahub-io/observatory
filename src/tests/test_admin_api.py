@@ -210,6 +210,30 @@ async def test_wipe_runtime_data_deletes_collected_data_and_preserves_configurat
         (1, "supported"),
     )
     await db.execute(
+        """INSERT INTO claim_extraction_runs
+            (id, run_key, source_file, pipeline_slug, extractor_revision, status)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+        (1, "run-admin-claim", "result.md", "admin-test", "extractor-v2", "complete"),
+    )
+    await db.execute(
+        """INSERT INTO claim_source_units
+            (id, extraction_run_id, unit_key, unit_kind, source_locator, original_text)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+        (1, 1, "unit-1", "sentence", "result.md:L1", "A claim"),
+    )
+    await db.execute(
+        """INSERT INTO claim_selection_results
+            (source_unit_id, classification, selected_text)
+            VALUES (?, ?, ?)""",
+        (1, "verifiable", "A claim"),
+    )
+    await db.execute(
+        """INSERT INTO claim_stage_receipt_events
+            (stage, scope_key, input_digest, skill_fqn, skill_revision, status)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+        ("extract-claims", "RFE-1", "sha256:input", "repo@main:extract-claims", "tree-1", "miss"),
+    )
+    await db.execute(
         "INSERT INTO collector_state (pipeline_id, last_run_external_id) VALUES (?, ?)",
         (1, "run-admin-001"),
     )
@@ -243,6 +267,10 @@ async def test_wipe_runtime_data_deletes_collected_data_and_preserves_configurat
     assert body["pipeline_runs"] == 1
     assert body["claims"] == 1
     assert body["claim_verdicts"] == 1
+    assert body["claim_extraction_runs"] == 1
+    assert body["claim_source_units"] == 1
+    assert body["claim_selection_results"] == 1
+    assert body["claim_stage_receipt_events"] == 1
     assert body["container_sboms"] == 1
     assert body["sbom_vulnerabilities"] == 1
     assert body["chat_messages"] == 1
@@ -269,6 +297,10 @@ async def test_wipe_runtime_data_deletes_collected_data_and_preserves_configurat
         "claims",
         "claim_sources",
         "claim_verdicts",
+        "claim_extraction_runs",
+        "claim_source_units",
+        "claim_selection_results",
+        "claim_stage_receipt_events",
         "collector_state",
         "chat_conversations",
         "chat_messages",
