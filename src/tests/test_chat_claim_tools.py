@@ -452,6 +452,59 @@ def test_tool_definitions_include_new_tools():
     assert "get_claim_occurrence_history" in names
     assert "query_claim_explanations" in names
     assert "get_claim_assurance_summary" in names
+    assert "query_github" in names
+
+
+# --- query_github tests ---
+
+
+async def test_query_github_no_data_source(db):
+    from backend.chat.tools import execute_tool
+
+    result = json.loads(await execute_tool(db, "query_github", {"action": "list_repos", "owner": "test"}))
+    assert "error" in result
+    assert "github_emulator" in result["error"]
+
+
+async def test_query_github_missing_owner(db):
+    """Even with no data source, missing-param errors come after the endpoint check."""
+    from backend.chat.tools import execute_tool
+
+    result = json.loads(await execute_tool(db, "query_github", {"action": "list_repos"}))
+    assert "error" in result
+
+
+async def test_query_github_unknown_action(db):
+    from backend.chat.tools import execute_tool
+
+    # Seed a fake data source so we get past the endpoint check
+    await db.execute(
+        """INSERT INTO data_sources (id, name, source_type, endpoint, status)
+           VALUES (?, ?, ?, ?, ?)""",
+        ("gh-test", "GitHub Emulator", "github_emulator", "http://localhost:9999", "active"),
+    )
+    await db.commit()
+    result = json.loads(await execute_tool(db, "query_github", {"action": "bad_action"}))
+    assert "error" in result
+    assert "Unknown action" in result["error"]
+
+
+def test_query_github_tool_definition_actions():
+    from backend.chat.tools import TOOL_DEFINITIONS
+
+    gh_tool = next(t for t in TOOL_DEFINITIONS if t["name"] == "query_github")
+    actions = gh_tool["input_schema"]["properties"]["action"]["enum"]
+    expected = {
+        "list_repos", "get_repo", "list_branches", "list_commits",
+        "list_pulls", "get_pull", "get_file", "search_code", "search_issues",
+    }
+    assert set(actions) == expected
+
+
+def test_query_github_handler_registered():
+    from backend.chat.tools import _TOOL_HANDLERS
+
+    assert "query_github" in _TOOL_HANDLERS
 
 
 def test_system_prompt_contains_v2_semantics():

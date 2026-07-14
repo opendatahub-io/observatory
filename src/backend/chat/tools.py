@@ -5,6 +5,7 @@ import logging
 import os
 from pathlib import Path
 
+import base64
 import aiosqlite
 import httpx
 
@@ -307,6 +308,39 @@ TOOL_DEFINITIONS: list[dict] = [
                 "experiment_name": {"type": "string", "description": "Filter experiments or runs by name pattern"},
                 "run_id": {"type": "string", "description": "Specific run ID (for get_run action)"},
                 "filter_string": {"type": "string", "description": "MLflow filter string for search_runs (e.g. 'metrics.cost_usd > 0')"},
+                "max_results": {"type": "integer", "description": "Max results to return", "default": 20},
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "query_github",
+        "description": (
+            "Query the configured GitHub emulator. List repos, branches, commits, "
+            "pull requests, read file contents, or search code and issues. "
+            "Use this to answer questions about repositories, branches, PRs, "
+            "recent commits, or source code in the emulated GitHub instance."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "list_repos", "get_repo", "list_branches",
+                        "list_commits", "list_pulls", "get_pull",
+                        "get_file", "search_code", "search_issues",
+                    ],
+                    "description": "API action to perform",
+                },
+                "owner": {"type": "string", "description": "Repository owner (user or org)"},
+                "repo": {"type": "string", "description": "Repository name"},
+                "sha": {"type": "string", "description": "Branch name or commit SHA (for list_commits)"},
+                "state": {"type": "string", "enum": ["open", "closed", "all"], "description": "PR state filter (for list_pulls)", "default": "open"},
+                "number": {"type": "integer", "description": "Pull request number (for get_pull)"},
+                "path": {"type": "string", "description": "File path (for get_file)"},
+                "ref": {"type": "string", "description": "Branch or tag ref (for get_file)"},
+                "query": {"type": "string", "description": "Search query (for search_code, search_issues)"},
                 "max_results": {"type": "integer", "description": "Max results to return", "default": 20},
             },
             "required": ["action"],
@@ -930,6 +964,283 @@ async def _resolve_endpoint(db: aiosqlite.Connection, source_type: str) -> str |
     return None
 
 
+async def _resolve_source(
+    db: aiosqlite.Connection, source_type: str,
+) -> tuple[str | None, dict]:
+    sources = await ds_crud.list_data_sources(db, status="active", source_type=source_type)
+    if sources and sources[0].get("endpoint"):
+        return sources[0]["endpoint"].rstrip("/"), sources[0].get("config") or {}
+    return None, {}
+
+
+_MAX_FILE_CONTENT = 10 * 1024
+
+
+async def _handle_query_github(db: aiosqlite.Connection, input: dict) -> dict:
+    endpoint, config = await _resolve_source(db, "github_emulator")
+    if not endpoint:
+        return {"error": "No active github_emulator data source configured. Add one in Intelligence Settings."}
+
+    action = input.get("action")
+    owner = input.get("owner")
+    repo = input.get("repo")
+    max_results = min(input.get("max_results", 20), 100)
+
+    headers = {}
+    token = config.get("token")
+    if token:
+        headers["Authorization"] = f"token {token}"
+
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=15, headers=headers) as client:
+            if action == "list_repos":
+                if not owner:
+                    return {"error": "owner is required for list_repos"}
+                resp = await client.get(
+                    f"{endpoint}/api/v3/users/{owner}/repos",
+                    params={"per_page": max_results},
+                )
+                resp.raise_for_status()
+                repos = resp.json()
+                return {
+                    "repos": [
+                        {
+                            "full_name": r.get("full_name"),
+                            "description": r.get("description"),
+                            "default_branch": r.get("default_branch"),
+                            "private": r.get("private"),
+                            "html_url": r.get("html_url"),
+                        }
+                        for r in repos[:max_results]
+                    ],
+                    "count": len(repos[:max_results]),
+                }
+
+            elif action == "get_repo":
+                if not owner or not repo:
+                    return {"error": "owner and repo are required for get_repo"}
+                resp = await client.get(f"{endpoint}/api/v3/repos/{owner}/{repo}")
+                resp.raise_for_status()
+                r = resp.json()
+                return {
+                    "full_name": r.get("full_name"),
+                    "description": r.get("description"),
+                    "default_branch": r.get("default_branch"),
+                    "private": r.get("private"),
+                    "language": r.get("language"),
+                    "fork": r.get("fork"),
+                    "html_url": r.get("html_url"),
+                    "created_at": r.get("created_at"),
+                    "updated_at": r.get("updated_at"),
+                }
+
+            elif action == "list_branches":
+                if not owner or not repo:
+                    return {"error": "owner and repo are required for list_branches"}
+                resp = await client.get(
+                    f"{endpoint}/api/v3/repos/{owner}/{repo}/branches",
+                    params={"per_page": max_results},
+                )
+                resp.raise_for_status()
+                branches = resp.json()
+                return {
+                    "branches": [
+                        {"name": b.get("name"), "protected": b.get("protected")}
+                        for b in branches[:max_results]
+                    ],
+                    "count": len(branches[:max_results]),
+                }
+
+            elif action == "list_commits":
+                if not owner or not repo:
+                    return {"error": "owner and repo are required for list_commits"}
+                params: dict = {"per_page": max_results}
+                if input.get("sha"):
+                    params["sha"] = input["sha"]
+                resp = await client.get(
+                    f"{endpoint}/api/v3/repos/{owner}/{repo}/commits",
+                    params=params,
+                )
+                resp.raise_for_status()
+                commits = resp.json()
+                return {
+                    "commits": [
+                        {
+                            "sha": c.get("sha", "")[:12],
+                            "message": (c.get("commit", {}).get("message") or "").split("\n")[0],
+                            "author": c.get("commit", {}).get("author", {}).get("name"),
+                            "date": c.get("commit", {}).get("author", {}).get("date"),
+                        }
+                        for c in commits[:max_results]
+                    ],
+                    "count": len(commits[:max_results]),
+                }
+
+            elif action == "list_pulls":
+                if not owner or not repo:
+                    return {"error": "owner and repo are required for list_pulls"}
+                state = input.get("state", "open")
+                resp = await client.get(
+                    f"{endpoint}/api/v3/repos/{owner}/{repo}/pulls",
+                    params={"state": state, "per_page": max_results},
+                )
+                resp.raise_for_status()
+                pulls = resp.json()
+                return {
+                    "pulls": [
+                        {
+                            "number": p.get("number"),
+                            "title": p.get("title"),
+                            "state": p.get("state"),
+                            "user": p.get("user", {}).get("login"),
+                            "head": p.get("head", {}).get("ref"),
+                            "base": p.get("base", {}).get("ref"),
+                            "merged": p.get("merged"),
+                            "draft": p.get("draft"),
+                            "created_at": p.get("created_at"),
+                        }
+                        for p in pulls[:max_results]
+                    ],
+                    "count": len(pulls[:max_results]),
+                }
+
+            elif action == "get_pull":
+                if not owner or not repo:
+                    return {"error": "owner and repo are required for get_pull"}
+                number = input.get("number")
+                if number is None:
+                    return {"error": "number is required for get_pull"}
+                resp = await client.get(
+                    f"{endpoint}/api/v3/repos/{owner}/{repo}/pulls/{number}",
+                )
+                resp.raise_for_status()
+                p = resp.json()
+                return {
+                    "number": p.get("number"),
+                    "title": p.get("title"),
+                    "state": p.get("state"),
+                    "body": p.get("body"),
+                    "user": p.get("user", {}).get("login"),
+                    "head": p.get("head", {}).get("ref"),
+                    "base": p.get("base", {}).get("ref"),
+                    "merged": p.get("merged"),
+                    "mergeable": p.get("mergeable"),
+                    "draft": p.get("draft"),
+                    "created_at": p.get("created_at"),
+                    "merged_at": p.get("merged_at"),
+                    "changed_files": p.get("changed_files"),
+                    "additions": p.get("additions"),
+                    "deletions": p.get("deletions"),
+                }
+
+            elif action == "get_file":
+                if not owner or not repo:
+                    return {"error": "owner and repo are required for get_file"}
+                file_path = input.get("path")
+                if not file_path:
+                    return {"error": "path is required for get_file"}
+                params = {}
+                if input.get("ref"):
+                    params["ref"] = input["ref"]
+                resp = await client.get(
+                    f"{endpoint}/api/v3/repos/{owner}/{repo}/contents/{file_path}",
+                    params=params,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                if isinstance(data, list):
+                    return {
+                        "type": "directory",
+                        "path": file_path,
+                        "entries": [
+                            {"name": e.get("name"), "type": e.get("type"), "size": e.get("size")}
+                            for e in data
+                        ],
+                        "count": len(data),
+                    }
+                content = None
+                truncated = False
+                if data.get("encoding") == "base64" and data.get("content"):
+                    try:
+                        raw = base64.b64decode(data["content"])
+                        decoded = raw.decode("utf-8", errors="replace")
+                        if len(decoded) > _MAX_FILE_CONTENT:
+                            content = decoded[:_MAX_FILE_CONTENT]
+                            truncated = True
+                        else:
+                            content = decoded
+                    except Exception:
+                        content = None
+                return {
+                    "type": data.get("type"),
+                    "path": data.get("path"),
+                    "size": data.get("size"),
+                    "content": content,
+                    "truncated": truncated,
+                }
+
+            elif action == "search_code":
+                query = input.get("query")
+                if not query:
+                    return {"error": "query is required for search_code"}
+                resp = await client.get(
+                    f"{endpoint}/api/v3/search/code",
+                    params={"q": query, "per_page": max_results},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return {
+                    "total_count": data.get("total_count", 0),
+                    "items": [
+                        {
+                            "name": item.get("name"),
+                            "path": item.get("path"),
+                            "repository": item.get("repository", {}).get("full_name"),
+                            "html_url": item.get("html_url"),
+                        }
+                        for item in data.get("items", [])[:max_results]
+                    ],
+                }
+
+            elif action == "search_issues":
+                query = input.get("query")
+                if not query:
+                    return {"error": "query is required for search_issues"}
+                resp = await client.get(
+                    f"{endpoint}/api/v3/search/issues",
+                    params={"q": query, "per_page": max_results},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return {
+                    "total_count": data.get("total_count", 0),
+                    "items": [
+                        {
+                            "number": item.get("number"),
+                            "title": item.get("title"),
+                            "state": item.get("state"),
+                            "user": item.get("user", {}).get("login"),
+                            "repository": item.get("repository_url", "").rsplit("/repos/", 1)[-1],
+                            "html_url": item.get("html_url"),
+                            "created_at": item.get("created_at"),
+                        }
+                        for item in data.get("items", [])[:max_results]
+                    ],
+                }
+
+            else:
+                return {
+                    "error": f"Unknown action: {action}. Use list_repos, get_repo, "
+                    "list_branches, list_commits, list_pulls, get_pull, get_file, "
+                    "search_code, or search_issues."
+                }
+
+    except httpx.HTTPStatusError as e:
+        return {"error": f"GitHub emulator returned {e.response.status_code}: {e.response.text[:200]}"}
+    except Exception as e:
+        return {"error": f"Failed to reach GitHub emulator at {endpoint}: {e}"}
+
+
 async def _handle_query_jira(db: aiosqlite.Connection, input: dict) -> dict:
     endpoint = await _resolve_endpoint(db, "jira")
     if not endpoint:
@@ -1102,6 +1413,7 @@ _TOOL_HANDLERS = {
     "kb_suggest": _handle_kb_suggest,
     "query_data_sources": _handle_query_data_sources,
     "query_jira": _handle_query_jira,
+    "query_github": _handle_query_github,
     "query_mlflow": _handle_query_mlflow,
     "browse_files": _handle_browse_files,
     "read_file": _handle_read_file,

@@ -47,6 +47,10 @@ Prefer structured claim tools (query_claims, get_claim_occurrence_history,
 query_claim_explanations, get_claim_assurance_summary) over browsing artifact
 files. Use file tools only for forensic context not represented in the database.
 
+Use query_github to query the GitHub emulator for repositories, branches,
+commits, pull requests, file contents, or code/issue search. It requires a
+github_emulator data source configured in Intelligence Settings.
+
 If you discover recurring questions that would benefit from a knowledge base article,
 use the kb_suggest tool to propose one.
 
