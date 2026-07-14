@@ -583,7 +583,7 @@ CREATE INDEX IF NOT EXISTS idx_claim_evidence_stage
 CREATE TABLE IF NOT EXISTS claim_human_overrides (
     id INTEGER PRIMARY KEY,
     claim_occurrence_id INTEGER NOT NULL REFERENCES claim_occurrences(id) ON DELETE CASCADE,
-    verification_run_id INTEGER REFERENCES claim_verification_runs(id) ON DELETE SET NULL,
+    verification_run_id INTEGER NOT NULL REFERENCES claim_verification_runs(id),
     actor TEXT NOT NULL,
     decision TEXT NOT NULL,
     rationale TEXT NOT NULL,
@@ -899,6 +899,18 @@ async def _backfill_claim_assurance(db: aiosqlite.Connection) -> None:
             ),
         )
 
+    await db.execute(
+        """UPDATE claim_human_overrides AS override
+           SET verification_run_id = (
+             SELECT verification.id
+             FROM claim_verification_runs AS verification
+             WHERE verification.claim_occurrence_id = override.claim_occurrence_id
+               AND verification.created_at <= override.created_at
+             ORDER BY verification.created_at DESC, verification.id DESC
+             LIMIT 1
+           )
+           WHERE verification_run_id IS NULL"""
+    )
     await db.commit()
 
 
