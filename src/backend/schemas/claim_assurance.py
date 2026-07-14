@@ -94,6 +94,19 @@ class ExtractionEvaluation(BaseModel):
             raise ValueError("extraction evaluation requires coverage_elements")
         if not self.evidence:
             raise ValueError("extraction evaluation requires source evidence")
+        if self.decontextualization_result in {"desirable", "undesirable"}:
+            required = (
+                "maximally_contextualized_claim",
+                "extracted_retrieval_digest",
+                "comparison_retrieval_digest",
+                "evidence_context_digest",
+            )
+            missing = [field for field in required if not getattr(self, field)]
+            if missing:
+                raise ValueError(
+                    "full decontextualization comparison requires "
+                    + ", ".join(missing)
+                )
         return self
 
 

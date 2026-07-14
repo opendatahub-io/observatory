@@ -207,6 +207,18 @@ async def test_rejects_unmeasurable_staged_extraction(
     assert detail in response.text
 
 
+async def test_rejects_incomplete_full_decontextualization_comparison(
+    client, extraction_payload
+):
+    evaluation = extraction_payload["units"][0]["claims"][0]["evaluation"]
+    evaluation["decontextualization_result"] = "desirable"
+    response = await client.post(
+        "/api/v2/claims/extraction-runs", json=extraction_payload
+    )
+    assert response.status_code == 422
+    assert "evidence_context_digest" in response.text
+
+
 async def test_occurrence_keeps_verification_and_explanation_history(
     client, extraction_payload
 ):
