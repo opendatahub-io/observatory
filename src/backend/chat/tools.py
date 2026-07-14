@@ -845,7 +845,6 @@ async def _handle_search_files(_db: aiosqlite.Connection, input: dict) -> dict:
     if not target.is_dir():
         return {"error": f"Not a directory: {input['path']}"}
 
-    import re
     import subprocess
 
     pattern = input["pattern"]

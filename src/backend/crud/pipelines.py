@@ -31,7 +31,7 @@ async def get_pipeline(db: aiosqlite.Connection, slug: str) -> dict | None:
 async def create_pipeline(db: aiosqlite.Connection, data: PipelineCreate) -> dict:
     jobs_json = json.dumps(data.jobs) if data.jobs is not None else None
     job_patterns_json = json.dumps(data.job_patterns) if data.job_patterns is not None else None
-    cursor = await db.execute(
+    await db.execute(
         """
         INSERT INTO pipelines (slug, name, description, owner, repo_url, platform,
                                platform_project_id, cron, expected_interval_minutes,

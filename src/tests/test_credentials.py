@@ -1,8 +1,5 @@
 """Tests for platform credential management (ADR-0006)."""
 
-import base64
-import hashlib
-import json
 import os
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch

@@ -2,8 +2,6 @@
 
 import json
 
-import pytest
-
 from backend.collector.job_filter import has_job_filters, matches_job_filter, parse_job_filters
 
 

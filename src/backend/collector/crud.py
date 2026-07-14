@@ -1,7 +1,5 @@
 """CRUD helpers for the collector_state table."""
 
-from datetime import datetime, timezone
-
 import aiosqlite
 
 

@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from urllib.parse import quote_plus, urlparse
 
 import httpx

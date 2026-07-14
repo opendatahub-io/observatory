@@ -190,7 +190,7 @@ async def test_idempotent_reparsing(client):
     db = await get_db()
 
     # Parse twice
-    counts1 = await parse_mlflow_artifact(db, run_id, pipeline_id, FULL_ARTIFACT)
+    await parse_mlflow_artifact(db, run_id, pipeline_id, FULL_ARTIFACT)
     counts2 = await parse_mlflow_artifact(db, run_id, pipeline_id, FULL_ARTIFACT)
 
     # Experiment and run are INSERT OR IGNORE, so second call inserts 0
