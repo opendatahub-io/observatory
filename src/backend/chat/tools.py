@@ -11,7 +11,8 @@ import httpx
 log = logging.getLogger(__name__)
 
 from backend.crud import data_sources as ds_crud
-from backend.crud import hallucinations as claims_crud
+from backend.crud import claim_assurance as claim_assurance_crud
+from backend.crud import claim_triage as claim_triage_crud
 from backend.crud import kb as kb_crud
 from backend.crud import pipelines as pipelines_crud
 from backend.crud import runs as runs_crud
@@ -47,17 +48,86 @@ TOOL_DEFINITIONS: list[dict] = [
     },
     {
         "name": "query_claims",
-        "description": "Search verified factual claims extracted from pipeline outputs. Filter by claim type, verdict, Jira key, or text search.",
+        "description": (
+            "Search claim occurrences from the Claim Assurance v2 system. "
+            "Each result is a specific occurrence (not a deduplicated claim). "
+            "Filter by occurrence ID, text search, claim type, verdict, pipeline, "
+            "Jira key, or source file. "
+            "Canonical verdicts: supported, contradicted, insufficient_evidence, "
+            "not_applicable. Use verdict 'pending' for unverified occurrences. "
+            "Use get_claim_occurrence_history for full verification and explanation history."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
+                "occurrence_id": {"type": "integer", "description": "Exact occurrence ID lookup"},
                 "search": {"type": "string", "description": "Text search in claim content"},
                 "claim_type": {"type": "string", "description": "Filter by claim type"},
-                "verdict": {"type": "string", "description": "Filter by verdict (supported, refuted, insufficient, inconclusive)"},
+                "verdict": {
+                    "type": "string",
+                    "enum": ["supported", "contradicted", "insufficient_evidence", "not_applicable", "pending"],
+                    "description": "Filter by effective verdict",
+                },
                 "pipeline_slug": {"type": "string", "description": "Filter claims from a specific pipeline"},
+                "source": {"type": "string", "description": "Filter by source file path pattern"},
                 "jira_key": {"type": "string", "description": "Filter claims linked to a specific Jira issue (e.g. RHAISTRAT-320)"},
                 "limit": {"type": "integer", "description": "Max results", "default": 20},
+                "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
             },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_claim_occurrence_history",
+        "description": (
+            "Get the full immutable history of a specific claim occurrence: "
+            "all verification runs with evidence, explanation runs with category/"
+            "improvement target/remediation/regression status, and human overrides. "
+            "Shows effective (newest) verification and explanation IDs. "
+            "Use this when asked about evidence, why a verdict changed, or details "
+            "of a specific occurrence."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "occurrence_id": {"type": "integer", "description": "The claim occurrence ID"},
+            },
+            "required": ["occurrence_id"],
+        },
+    },
+    {
+        "name": "query_claim_explanations",
+        "description": (
+            "Search immutable v2 explanation runs. Filter by root-cause category, "
+            "improvement target, Jira key, or human-review requirement. "
+            "Returns structured explanation data including contributing factors, "
+            "alternatives, remediation, and regression status."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "category": {"type": "string", "description": "Filter by explanation category"},
+                "improvement_target": {"type": "string", "description": "Filter by improvement target"},
+                "jira_key": {"type": "string", "description": "Filter by linked Jira key"},
+                "human_review_required": {"type": "boolean", "description": "Filter by human review requirement"},
+                "limit": {"type": "integer", "description": "Max results", "default": 20},
+                "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_claim_assurance_summary",
+        "description": (
+            "Get the effective occurrence-level summary from Claim Assurance v2: "
+            "total occurrences, verdict distribution (supported/contradicted/"
+            "insufficient_evidence/not_applicable/pending), explanation and "
+            "human-review counts. These are effective counts per occurrence, "
+            "not total immutable run counts."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
             "required": [],
         },
     },
@@ -313,17 +383,185 @@ async def _handle_query_runs(db: aiosqlite.Connection, input: dict) -> dict:
 
 
 async def _handle_query_claims(db: aiosqlite.Connection, input: dict) -> dict:
-    result = await claims_crud.get_claims(
+    result = await claim_triage_crud.list_triage_occurrences(
         db,
-        search=input.get("search"),
         claim_type=input.get("claim_type"),
+        exclude_types=[],
         verdict=input.get("verdict"),
-        pipeline_slug=input.get("pipeline_slug"),
         jira_key=input.get("jira_key"),
+        search=input.get("search"),
+        source=input.get("source"),
+        sort=None,
+        sort_dir="desc",
         limit=input.get("limit", 20),
-        offset=0,
+        offset=input.get("offset", 0),
+        pipeline_slug=input.get("pipeline_slug"),
+        occurrence_id=input.get("occurrence_id"),
     )
-    return {"claims": result.get("claims", []), "total": result.get("total", 0)}
+    occurrences = []
+    for occ in result.get("occurrences", []):
+        occurrences.append({
+            "occurrence_id": occ["id"],
+            "normalized_claim_id": occ.get("normalized_claim_id"),
+            "claim_text": occ.get("claim_text"),
+            "claim_type": occ.get("claim_type"),
+            "source_file": occ.get("source_file"),
+            "source_locator": occ.get("source_locator"),
+            "pipeline_slug": occ.get("pipeline_slug"),
+            "jira_keys": occ.get("jira_keys", []),
+            "effective_verdict": occ.get("verdict") or "pending",
+            "effective_confidence": occ.get("confidence"),
+            "effective_severity": occ.get("severity"),
+            "effective_verification_run_id": occ.get("verification_run_id"),
+            "effective_explanation_run_id": occ.get("explanation_run_id"),
+            "override_count": occ.get("override_count", 0),
+            "processing_state": occ.get("processing_state"),
+            "ui_path": f"/hallucinations?occurrence={occ['id']}",
+        })
+    return {
+        "data_authority": "claim_assurance_v2",
+        "occurrences": occurrences,
+        "total": result.get("total", 0),
+    }
+
+
+async def _handle_get_claim_occurrence_history(
+    db: aiosqlite.Connection, input: dict,
+) -> dict:
+    occurrence_id = input.get("occurrence_id")
+    if occurrence_id is None:
+        return {"error": "occurrence_id is required"}
+    history = await claim_assurance_crud.get_occurrence_history(db, occurrence_id)
+    if history is None:
+        return {"error": f"Occurrence {occurrence_id} not found"}
+    occ = history["occurrence"]
+    verification_runs = history.get("verification_runs", [])
+    effective_v_id = history.get("effective_verification_run_id")
+    effective_e_id = history.get("effective_explanation_run_id")
+    compact_runs = []
+    for run in verification_runs:
+        compact_run = {
+            "id": run["id"],
+            "verdict": run["verdict"],
+            "confidence": run.get("confidence"),
+            "severity": run.get("severity"),
+            "evidence_summary": run.get("evidence_summary"),
+            "model": run.get("model"),
+            "created_at": run.get("created_at"),
+            "is_effective": run["id"] == effective_v_id,
+            "evidence": run.get("evidence", []),
+        }
+        explanations = []
+        for exp in run.get("explanation_runs", []):
+            explanations.append({
+                "id": exp["id"],
+                "category": exp.get("category"),
+                "improvement_target": exp.get("improvement_target"),
+                "explanation": exp.get("explanation"),
+                "contributing_factors": exp.get("contributing_factors", []),
+                "alternative_explanations": exp.get("alternative_explanations", []),
+                "remediation": exp.get("remediation"),
+                "regression_test": exp.get("regression_test"),
+                "human_review_required": exp.get("human_review_required"),
+                "created_at": exp.get("created_at"),
+                "is_effective": exp["id"] == effective_e_id,
+                "evidence": exp.get("evidence", []),
+                "regression_runs": exp.get("regression_runs", []),
+            })
+        compact_run["explanation_runs"] = explanations
+        compact_runs.append(compact_run)
+    overrides = []
+    for ov in history.get("human_overrides", []):
+        overrides.append({
+            "id": ov["id"],
+            "verification_run_id": ov.get("verification_run_id"),
+            "actor": ov.get("actor"),
+            "decision": ov.get("decision"),
+            "rationale": ov.get("rationale"),
+            "created_at": ov.get("created_at"),
+        })
+    return {
+        "data_authority": "claim_assurance_v2",
+        "occurrence_id": occ["id"],
+        "normalized_claim_id": occ.get("normalized_claim_id"),
+        "claim_text": occ.get("claim_text"),
+        "claim_type": occ.get("claim_type"),
+        "source_file": occ.get("source_file"),
+        "source_locator": occ.get("source_locator"),
+        "pipeline_slug": occ.get("pipeline_slug"),
+        "jira_keys": history.get("jira_keys", []),
+        "effective_verification_run_id": effective_v_id,
+        "effective_explanation_run_id": effective_e_id,
+        "processing_state": history.get("processing_state"),
+        "verification_runs": compact_runs,
+        "human_overrides": overrides,
+        "ui_path": f"/hallucinations?occurrence={occ['id']}",
+    }
+
+
+async def _handle_query_claim_explanations(
+    db: aiosqlite.Connection, input: dict,
+) -> dict:
+    result = await claim_triage_crud.list_triage_explanations(
+        db,
+        category=input.get("category"),
+        improvement_target=input.get("improvement_target"),
+        jira_key=input.get("jira_key"),
+        human_review_required=input.get("human_review_required"),
+        limit=input.get("limit", 20),
+        offset=input.get("offset", 0),
+    )
+    explanations = []
+    for exp in result.get("explanations", []):
+        explanations.append({
+            "id": exp["id"],
+            "occurrence_id": exp.get("claim_occurrence_id"),
+            "claim_text": exp.get("claim_text"),
+            "claim_type": exp.get("claim_type"),
+            "verdict": exp.get("verdict"),
+            "confidence": exp.get("confidence"),
+            "severity": exp.get("severity"),
+            "source_file": exp.get("source_file"),
+            "source_locator": exp.get("source_locator"),
+            "category": exp.get("category"),
+            "improvement_target": exp.get("improvement_target"),
+            "explanation": exp.get("explanation"),
+            "contributing_factors": exp.get("contributing_factors", []),
+            "alternative_explanations": exp.get("alternative_explanations", []),
+            "remediation": exp.get("remediation"),
+            "regression_test": exp.get("regression_test"),
+            "human_review_required": exp.get("human_review_required"),
+            "jira_keys": exp.get("jira_keys", []),
+            "evidence": exp.get("evidence", []),
+            "created_at": exp.get("created_at"),
+        })
+    return {
+        "data_authority": "claim_assurance_v2",
+        "explanations": explanations,
+        "total": result.get("total", 0),
+    }
+
+
+async def _handle_get_claim_assurance_summary(
+    db: aiosqlite.Connection, _input: dict,
+) -> dict:
+    summary = await claim_triage_crud.get_triage_summary(db)
+    return {
+        "data_authority": "claim_assurance_v2",
+        "label": "effective_occurrence_summary",
+        "total_occurrences": summary.get("total_occurrences", 0),
+        "verified": summary.get("verified", 0),
+        "pending": summary.get("pending", 0),
+        "verdicts": {
+            "supported": summary.get("supported", 0),
+            "contradicted": summary.get("contradicted", 0),
+            "insufficient_evidence": summary.get("insufficient_evidence", 0),
+            "not_applicable": summary.get("not_applicable", 0),
+        },
+        "explained": summary.get("explained", 0),
+        "human_review_required": summary.get("human_review_required", 0),
+        "jira_keys_referenced": summary.get("jira_keys_referenced", 0),
+    }
 
 
 async def _handle_query_telemetry(db: aiosqlite.Connection, input: dict) -> dict:
@@ -854,6 +1092,9 @@ _TOOL_HANDLERS = {
     "query_pipelines": _handle_query_pipelines,
     "query_runs": _handle_query_runs,
     "query_claims": _handle_query_claims,
+    "get_claim_occurrence_history": _handle_get_claim_occurrence_history,
+    "query_claim_explanations": _handle_query_claim_explanations,
+    "get_claim_assurance_summary": _handle_get_claim_assurance_summary,
     "query_telemetry": _handle_query_telemetry,
     "query_vulnerabilities": _handle_query_vulnerabilities,
     "query_artifacts": _handle_query_artifacts,

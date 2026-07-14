@@ -18,6 +18,14 @@ from backend.crud.claim_assurance import (
     get_occurrence_history,
 )
 from backend.database import get_db
+from backend.crud.claim_triage import (
+    get_triage_explanation_facets,
+    get_triage_issues,
+    get_triage_summary,
+    get_triage_types,
+    list_triage_explanations,
+    list_triage_occurrences,
+)
 from backend.schemas.claim_assurance import (
     ExplanationRunInput,
     ExtractionRunInput,
@@ -33,6 +41,70 @@ router = APIRouter(prefix="/api/v2/claims", tags=["claim-assurance"])
 @router.get("/summary")
 async def assurance_summary(db: aiosqlite.Connection = Depends(get_db)):
     return await get_assurance_summary(db)
+
+
+@router.get("/triage/summary")
+async def triage_summary(db: aiosqlite.Connection = Depends(get_db)):
+    return await get_triage_summary(db)
+
+
+@router.get("/triage/types")
+async def triage_types(db: aiosqlite.Connection = Depends(get_db)):
+    return await get_triage_types(db)
+
+
+@router.get("/triage/occurrences")
+async def triage_occurrences(
+    claim_type: str | None = Query(default=None, alias="type"),
+    exclude_types: str | None = Query(default=None),
+    verdict: str | None = Query(default=None),
+    jira_key: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    source: str | None = Query(default=None),
+    pipeline_slug: str | None = Query(default=None),
+    sort: str | None = Query(default=None),
+    sort_dir: str = Query(default="desc", pattern="^(asc|desc)$"),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    excluded = [value for value in (exclude_types or "").split(",") if value]
+    return await list_triage_occurrences(
+        db, claim_type, excluded, verdict, jira_key, search, source,
+        sort, sort_dir, limit, offset, pipeline_slug=pipeline_slug,
+    )
+
+
+@router.get("/triage/issues")
+async def triage_issues(
+    sort: str = Query(default="contradicted"),
+    sort_dir: str = Query(default="desc", pattern="^(asc|desc)$"),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    return await get_triage_issues(db, sort, sort_dir, limit, offset)
+
+
+@router.get("/triage/explanations")
+async def triage_explanations(
+    category: str | None = Query(default=None),
+    improvement_target: str | None = Query(default=None),
+    jira_key: str | None = Query(default=None),
+    human_review_required: bool | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    return await list_triage_explanations(
+        db, category, improvement_target, jira_key, human_review_required,
+        limit, offset,
+    )
+
+
+@router.get("/triage/explanation-facets")
+async def triage_explanation_facets(db: aiosqlite.Connection = Depends(get_db)):
+    return await get_triage_explanation_facets(db)
 
 
 @router.get("/extraction-runs")
