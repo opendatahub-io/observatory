@@ -8,14 +8,14 @@ from pathlib import Path
 import aiosqlite
 import httpx
 
-log = logging.getLogger(__name__)
-
 from backend.crud import data_sources as ds_crud
 from backend.crud import claim_assurance as claim_assurance_crud
 from backend.crud import claim_triage as claim_triage_crud
 from backend.crud import kb as kb_crud
 from backend.crud import pipelines as pipelines_crud
 from backend.crud import runs as runs_crud
+
+log = logging.getLogger(__name__)
 
 
 TOOL_DEFINITIONS: list[dict] = [
