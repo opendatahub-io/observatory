@@ -19,6 +19,10 @@ class ExtractionRunConflict(Exception):
     """A supposedly idempotent run key was reused for different content."""
 
 
+class HumanOverrideTargetConflict(Exception):
+    """An override did not identify a verification run for its occurrence."""
+
+
 JIRA_KEY_PATTERN = re.compile(r"\b[A-Z][A-Z0-9]{1,20}-\d+\b")
 
 
@@ -793,6 +797,16 @@ async def list_occurrences_for_verification(
 
 
 async def create_human_override(db: aiosqlite.Connection, data: HumanOverrideInput) -> dict:
+    cursor = await db.execute(
+        """SELECT id FROM claim_verification_runs
+           WHERE id = ? AND claim_occurrence_id = ?""",
+        (data.verification_run_id, data.claim_occurrence_id),
+    )
+    if await cursor.fetchone() is None:
+        raise HumanOverrideTargetConflict(
+            f"verification run {data.verification_run_id} does not belong to "
+            f"claim occurrence {data.claim_occurrence_id}"
+        )
     cursor = await db.execute(
         """INSERT INTO claim_human_overrides
            (claim_occurrence_id, verification_run_id, actor, decision, rationale)

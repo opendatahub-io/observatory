@@ -245,7 +245,7 @@ class ExplanationRunInput(BaseModel):
 
 class HumanOverrideInput(BaseModel):
     claim_occurrence_id: int
-    verification_run_id: int | None = None
+    verification_run_id: int = Field(gt=0)
     actor: str
     decision: str
     rationale: str

@@ -285,6 +285,23 @@ async def test_occurrence_keeps_verification_and_explanation_history(
     assert explanation.status_code == 201
     explanation_id = explanation.json()["id"]
 
+    missing_run_override = await client.post("/api/v2/claims/human-overrides", json={
+        "claim_occurrence_id": occurrence_id,
+        "actor": "reviewer@example.test",
+        "decision": "allow_with_followup",
+        "rationale": "An immutable verification target is required.",
+    })
+    assert missing_run_override.status_code == 422
+
+    wrong_run_override = await client.post("/api/v2/claims/human-overrides", json={
+        "claim_occurrence_id": occurrence_id,
+        "verification_run_id": 999999,
+        "actor": "reviewer@example.test",
+        "decision": "allow_with_followup",
+        "rationale": "A different or missing verification run must be rejected.",
+    })
+    assert wrong_run_override.status_code == 409
+
     override = await client.post("/api/v2/claims/human-overrides", json={
         "claim_occurrence_id": occurrence_id,
         "verification_run_id": verification_id,

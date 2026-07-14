@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from backend.crud.claim_assurance import (
     ExtractionRunConflict,
+    HumanOverrideTargetConflict,
     create_explanation_run,
     create_extraction_run,
     create_human_override,
@@ -95,7 +96,10 @@ async def ingest_explanation_run(
 async def ingest_human_override(
     data: HumanOverrideInput, db: aiosqlite.Connection = Depends(get_db)
 ):
-    return await create_human_override(db, data)
+    try:
+        return await create_human_override(db, data)
+    except HumanOverrideTargetConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/regression-runs", status_code=201)
