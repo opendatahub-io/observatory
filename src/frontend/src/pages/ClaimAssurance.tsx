@@ -69,7 +69,10 @@ interface OccurrenceHistory {
       regression_runs: Array<{ id: number; status: string; dataset_fqn: string }>;
     }>;
   }>;
-  human_overrides: Array<{ id: number; actor: string; decision: string; rationale: string }>;
+  human_overrides: Array<{
+    id: number; verification_run_id: number; actor: string;
+    decision: string; rationale: string;
+  }>;
 }
 
 export default function ClaimAssurance() {
@@ -204,7 +207,7 @@ export default function ClaimAssurance() {
             {explanation.regression_runs.map((regression) => <div key={regression.id} className="mt-2 text-xs">Regression <Badge value={regression.status} /> <span className="font-mono">{regression.dataset_fqn}</span></div>)}
           </div>)}
         </div>)}</div>
-        {history.human_overrides.map((override) => <div key={override.id} className="mt-3 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"><strong>Human override: {override.decision}</strong> by {override.actor}<p>{override.rationale}</p></div>)}
+        {history.human_overrides.map((override) => <div key={override.id} className="mt-3 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"><strong>Human override: {override.decision}</strong> by {override.actor} for verification run #{override.verification_run_id}<p>{override.rationale}</p></div>)}
       </div>}
       {summary && (
         <div className="grid gap-4 md:grid-cols-2">
