@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import Markdown from "../components/Markdown";
 import {
   BookOpen,
   Plus,
@@ -83,38 +84,7 @@ const CATEGORY_COLORS = [
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
-function renderMarkdown(md: string): string {
-  return md
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(
-      /^### (.+)$/gm,
-      '<h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mt-3 mb-1">$1</h3>',
-    )
-    .replace(
-      /^## (.+)$/gm,
-      '<h2 class="text-base font-semibold text-gray-900 dark:text-gray-100 mt-4 mb-2">$1</h2>',
-    )
-    .replace(
-      /^# (.+)$/gm,
-      '<h1 class="text-lg font-bold text-gray-900 dark:text-gray-100 mt-4 mb-2">$1</h1>',
-    )
-    .replace(
-      /\*\*(.+?)\*\*/g,
-      '<strong class="font-semibold text-gray-900 dark:text-gray-100">$1</strong>',
-    )
-    .replace(
-      /\[([^\]]+)\]\(([^)]+)\)/g,
-      '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-primary-600 dark:text-primary-400 hover:underline">$1</a>',
-    )
-    .replace(
-      /`([^`]+)`/g,
-      '<code class="px-1 py-0.5 bg-gray-100 dark:bg-gray-700 rounded text-sm">$1</code>',
-    )
-    .replace(/^- (.+)$/gm, '<li class="ml-4">$1</li>')
-    .replace(/\n/g, "<br>");
-}
+/* renderMarkdown removed — using shared <Markdown> component */
 
 function slugify(text: string): string {
   return text
@@ -940,10 +910,9 @@ function KnowledgeBase() {
               </div>
 
               {/* Rendered body */}
-              <div
-                className="prose prose-sm dark:prose-invert max-w-none text-sm text-gray-700 dark:text-gray-300 leading-relaxed"
-                dangerouslySetInnerHTML={{ __html: renderMarkdown(selectedArticle.body) }}
-              />
+              <div className="prose prose-sm dark:prose-invert max-w-none text-sm text-gray-700 dark:text-gray-300 leading-relaxed">
+                <Markdown content={selectedArticle.body} />
+              </div>
             </div>
           </div>
         </div>

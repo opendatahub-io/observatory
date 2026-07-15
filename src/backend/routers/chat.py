@@ -89,11 +89,23 @@ async def send_message(
         msg_id = uuid.uuid4().hex
         yield f"event: message_start\ndata: {json.dumps({'id': msg_id, 'role': 'assistant'})}\n\n"
 
-        full_text_parts: list[str] = []
-        tool_calls: list[dict] = []
-        pending_tool: dict | None = None
-        had_text_before_tool = False
+        blocks: list[dict] = []
+        pending_text = ""
+        block_counter = 0
+        tool_call_id_map: dict[str, str] = {}
         usage: dict = {}
+
+        def next_block_id() -> str:
+            nonlocal block_counter
+            block_counter += 1
+            return f"{msg_id}-block-{block_counter}"
+
+        def flush_activity():
+            nonlocal pending_text
+            text = pending_text.strip()
+            if text:
+                blocks.append({"id": next_block_id(), "type": "activity", "text": text})
+            pending_text = ""
 
         try:
             async for event in stream_chat_response(db, messages):
@@ -101,42 +113,72 @@ async def send_message(
                 evt_data = event["data"]
 
                 if evt_type == "content_delta":
-                    full_text_parts.append(evt_data["text"])
-                    had_text_before_tool = True
+                    pending_text += evt_data.get("text", "")
+                    yield f"event: {evt_type}\ndata: {json.dumps(evt_data)}\n\n"
+
                 elif evt_type == "tool_use":
-                    if had_text_before_tool:
-                        full_text_parts.append("\n\n")
-                        had_text_before_tool = False
-                    pending_tool = {"tool": evt_data["tool"], "input": evt_data["input"]}
+                    flush_activity()
+                    block_id = next_block_id()
+                    tool_name = evt_data["tool"]
+                    tool_call_id_map[tool_name] = block_id
+                    blocks.append({
+                        "id": block_id,
+                        "type": "tool",
+                        "tool_call_id": block_id,
+                        "tool": tool_name,
+                        "input": evt_data["input"],
+                        "status": "running",
+                    })
+                    enriched = {**evt_data, "tool_call_id": block_id}
+                    yield f"event: {evt_type}\ndata: {json.dumps(enriched)}\n\n"
+
                 elif evt_type == "tool_result":
-                    if pending_tool and pending_tool["tool"] == evt_data["tool"]:
-                        pending_tool["result"] = evt_data["result"]
-                        tool_calls.append(pending_tool)
-                        pending_tool = None
+                    tool_name = evt_data["tool"]
+                    block_id = tool_call_id_map.get(tool_name)
+                    is_error = evt_data.get("is_error", False)
+                    for b in blocks:
+                        if b["type"] == "tool" and b.get("id") == block_id:
+                            b["result"] = evt_data["result"]
+                            b["status"] = "failed" if is_error else "succeeded"
+                            break
+                    enriched = {**evt_data, "tool_call_id": block_id or ""}
+                    yield f"event: {evt_type}\ndata: {json.dumps(enriched)}\n\n"
+
                 elif evt_type == "message_end":
                     usage = evt_data.get("usage", {})
+                    text = pending_text.strip()
+                    if text:
+                        blocks.append({"id": next_block_id(), "type": "answer", "text": text})
+                        pending_text = ""
+                    yield f"event: {evt_type}\ndata: {json.dumps(evt_data)}\n\n"
 
-                yield f"event: {evt_type}\ndata: {json.dumps(evt_data)}\n\n"
+                else:
+                    yield f"event: {evt_type}\ndata: {json.dumps(evt_data)}\n\n"
 
         except Exception as e:
             yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
-        if pending_tool:
-            tool_calls.append(pending_tool)
+        remaining = pending_text.strip()
+        if remaining:
+            blocks.append({"id": next_block_id(), "type": "answer", "text": remaining})
 
-        full_text = "".join(full_text_parts)
-        if full_text or tool_calls:
+        answer_text = ""
+        for b in blocks:
+            if b["type"] == "answer":
+                answer_text = b.get("text", "")
+                break
+
+        if blocks:
             metadata = {}
             if usage:
                 metadata.update(usage)
-            if tool_calls:
-                metadata["tool_calls"] = tool_calls
             await chat_crud.add_message(
-                db, conversation_id, "assistant", full_text,
+                db, conversation_id, "assistant", answer_text,
                 json.dumps(metadata, default=str) if metadata else None,
+                json.dumps(blocks, default=str),
             )
 
-        if not conv.get("title") and full_text:
+        if not conv.get("title") and answer_text:
             auto_title = data.content[:60].strip()
             if len(data.content) > 60:
                 auto_title += "..."

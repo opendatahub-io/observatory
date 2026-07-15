@@ -703,6 +703,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool_use', 'tool_result')),
     content TEXT NOT NULL,
     metadata TEXT,
+    blocks TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation ON chat_messages(conversation_id, created_at);
@@ -989,6 +990,56 @@ async def _ensure_claim_assurance_columns(db: aiosqlite.Connection) -> None:
     await db.commit()
 
 
+async def _ensure_chat_blocks_column(db: aiosqlite.Connection) -> None:
+    """Add blocks column to chat_messages and migrate existing messages."""
+    cursor = await db.execute("PRAGMA table_info(chat_messages)")
+    columns = {row["name"] for row in await cursor.fetchall()}
+    if "blocks" in columns:
+        return
+
+    await db.execute("ALTER TABLE chat_messages ADD COLUMN blocks TEXT")
+
+    cursor = await db.execute(
+        "SELECT id, role, content, metadata FROM chat_messages WHERE role = 'assistant'"
+    )
+    rows = await cursor.fetchall()
+    for row in rows:
+        msg = dict(row)
+        tool_calls = []
+        meta = msg.get("metadata")
+        if meta:
+            try:
+                parsed = json.loads(meta)
+                if isinstance(parsed, dict):
+                    tool_calls = parsed.get("tool_calls", [])
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        blocks = []
+        for i, tc in enumerate(tool_calls):
+            blocks.append({
+                "id": f"migrated-tool-{i}",
+                "type": "tool",
+                "tool": tc.get("tool", "unknown"),
+                "input": tc.get("input", {}),
+                "result": tc.get("result"),
+                "status": "succeeded" if tc.get("result") is not None else "failed",
+            })
+        if msg["content"]:
+            blocks.append({
+                "id": "migrated-answer",
+                "type": "answer",
+                "text": msg["content"],
+                "activity_order": "legacy_unavailable",
+            })
+        if blocks:
+            await db.execute(
+                "UPDATE chat_messages SET blocks = ? WHERE id = ?",
+                (json.dumps(blocks), msg["id"]),
+            )
+    await db.commit()
+
+
 async def init_schema(db: aiosqlite.Connection) -> None:
     """Apply schema directly (for tests and first-run initialization)."""
     await db.executescript(_SCHEMA_SQL)
@@ -996,4 +1047,5 @@ async def init_schema(db: aiosqlite.Connection) -> None:
     await _ensure_fts(db)
     await _ensure_claim_assurance_columns(db)
     await _backfill_claim_assurance(db)
+    await _ensure_chat_blocks_column(db)
     await db.execute("PRAGMA foreign_keys=ON")

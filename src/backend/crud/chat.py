@@ -57,7 +57,18 @@ async def get_messages(
     )
     messages = [dict(r) for r in await cursor.fetchall()]
     for msg in messages:
-        if msg.get("metadata"):
+        if msg.get("blocks"):
+            try:
+                blocks = json.loads(msg["blocks"])
+                msg["blocks"] = blocks
+                answer_block = next(
+                    (b for b in blocks if b.get("type") == "answer"), None
+                )
+                if answer_block and answer_block.get("activity_order"):
+                    msg["activity_order"] = answer_block["activity_order"]
+            except (json.JSONDecodeError, TypeError):
+                pass
+        elif msg.get("metadata"):
             try:
                 meta = json.loads(msg["metadata"])
                 if isinstance(meta, dict) and "tool_calls" in meta:
@@ -74,12 +85,13 @@ async def add_message(
     role: str,
     content: str,
     metadata: str | None = None,
+    blocks: str | None = None,
 ) -> dict:
     msg_id = uuid.uuid4().hex
     await db.execute(
-        """INSERT INTO chat_messages (id, conversation_id, role, content, metadata)
-        VALUES (?, ?, ?, ?, ?)""",
-        (msg_id, conversation_id, role, content, metadata),
+        """INSERT INTO chat_messages (id, conversation_id, role, content, metadata, blocks)
+        VALUES (?, ?, ?, ?, ?, ?)""",
+        (msg_id, conversation_id, role, content, metadata, blocks),
     )
     await db.execute(
         "UPDATE chat_conversations SET updated_at = datetime('now') WHERE id = ?",
