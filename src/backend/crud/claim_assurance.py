@@ -293,7 +293,9 @@ async def create_explanation_run(db: aiosqlite.Connection, data: ExplanationRunI
 
 async def get_occurrence_history(db: aiosqlite.Connection, occurrence_id: int) -> dict | None:
     cursor = await db.execute(
-        """SELECT co.*, c.claim_hash, csu.source_locator, cer.run_key
+        """SELECT co.*, c.claim_hash, csu.source_locator,
+                  csu.original_text AS source_unit_text, cer.run_key,
+                  cer.source_file, cer.pipeline_slug, cer.artifact_type
            FROM claim_occurrences co
            JOIN claims c ON c.id = co.normalized_claim_id
            JOIN claim_source_units csu ON csu.id = co.source_unit_id
@@ -305,7 +307,8 @@ async def get_occurrence_history(db: aiosqlite.Connection, occurrence_id: int) -
     if not occurrence:
         return None
     cursor = await db.execute(
-        "SELECT * FROM claim_verification_runs WHERE claim_occurrence_id = ? ORDER BY id",
+        """SELECT * FROM claim_verification_runs WHERE claim_occurrence_id = ?
+           ORDER BY created_at, id""",
         (occurrence_id,),
     )
     verification_runs = [dict(row) for row in await cursor.fetchall()]
@@ -317,13 +320,19 @@ async def get_occurrence_history(db: aiosqlite.Connection, occurrence_id: int) -
         )
         verification["evidence"] = [dict(row) for row in await evidence_cursor.fetchall()]
         explanation_cursor = await db.execute(
-            "SELECT * FROM claim_explanation_runs WHERE verification_run_id = ? ORDER BY id",
+            """SELECT * FROM claim_explanation_runs WHERE verification_run_id = ?
+               ORDER BY created_at, id""",
             (verification["id"],),
         )
         verification["explanation_runs"] = [
             dict(row) for row in await explanation_cursor.fetchall()
         ]
         for explanation in verification["explanation_runs"]:
+            for field in ("contributing_factors", "alternative_explanations"):
+                try:
+                    explanation[field] = json.loads(explanation.get(field) or "[]")
+                except json.JSONDecodeError:
+                    explanation[field] = []
             evidence_cursor = await db.execute(
                 """SELECT * FROM claim_evidence_records
                    WHERE stage = 'explanation' AND stage_run_id = ? ORDER BY id""",
@@ -339,14 +348,46 @@ async def get_occurrence_history(db: aiosqlite.Connection, occurrence_id: int) -
             explanation["regression_runs"] = [
                 dict(row) for row in await regression_cursor.fetchall()
             ]
+            for regression in explanation["regression_runs"]:
+                try:
+                    regression["metrics"] = json.loads(regression.get("metrics") or "{}")
+                except json.JSONDecodeError:
+                    regression["metrics"] = {}
     override_cursor = await db.execute(
         "SELECT * FROM claim_human_overrides WHERE claim_occurrence_id = ? ORDER BY id",
         (occurrence_id,),
     )
+    overrides = [dict(row) for row in await override_cursor.fetchall()]
+    jira_cursor = await db.execute(
+        """SELECT jira_key FROM claim_occurrence_jira_keys
+           WHERE claim_occurrence_id = ? ORDER BY jira_key""",
+        (occurrence_id,),
+    )
+    effective_verification = verification_runs[-1] if verification_runs else None
+    effective_explanation = (
+        effective_verification["explanation_runs"][-1]
+        if effective_verification and effective_verification["explanation_runs"] else None
+    )
+    if effective_verification is None:
+        processing_state = "not_verified"
+    elif effective_explanation is None:
+        processing_state = "verified_without_explanation"
+    elif effective_explanation["human_review_required"] == 1:
+        processing_state = "explanation_requires_human_review"
+    else:
+        processing_state = "explained"
     return {
         "occurrence": dict(occurrence),
+        "jira_keys": [row["jira_key"] for row in await jira_cursor.fetchall()],
         "verification_runs": verification_runs,
-        "human_overrides": [dict(row) for row in await override_cursor.fetchall()],
+        "human_overrides": overrides,
+        "effective_verification_run_id": (
+            effective_verification["id"] if effective_verification else None
+        ),
+        "effective_explanation_run_id": (
+            effective_explanation["id"] if effective_explanation else None
+        ),
+        "processing_state": processing_state,
     }
 
 

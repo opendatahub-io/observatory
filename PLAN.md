@@ -38,6 +38,7 @@
 ## Active Tasks
 
 - [task-claim-assurance-loop.md](docs/tasks/done/task-claim-assurance-loop.md) — Claimify-aligned extraction assurance, provenance, and feedback loop (complete)
+- [task-migrate-hallucinations-ux-to-claim-assurance.md](docs/tasks/done/task-migrate-hallucinations-ux-to-claim-assurance.md) — Present immutable v2 verdicts and explanations in the Hallucinations triage UX (complete)
 
 ### M8: Hallucination Detection
 

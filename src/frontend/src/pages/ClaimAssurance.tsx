@@ -23,6 +23,15 @@ interface Summary {
   };
 }
 
+interface EffectiveSummary {
+  total_occurrences: number;
+  pending: number;
+  supported: number;
+  contradicted: number;
+  insufficient_evidence: number;
+  not_applicable: number;
+}
+
 interface ExtractionRun {
   id: number;
   run_key: string;
@@ -77,6 +86,7 @@ interface OccurrenceHistory {
 
 export default function ClaimAssurance() {
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [effectiveSummary, setEffectiveSummary] = useState<EffectiveSummary | null>(null);
   const [runs, setRuns] = useState<ExtractionRun[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [detail, setDetail] = useState<RunDetail | null>(null);
@@ -85,11 +95,13 @@ export default function ClaimAssurance() {
   useEffect(() => {
     Promise.all([
       fetch("/api/v2/claims/summary"),
+      fetch("/api/v2/claims/triage/summary"),
       fetch("/api/v2/claims/extraction-runs"),
     ])
-      .then(async ([summaryResponse, runsResponse]) => {
-        if (!summaryResponse.ok || !runsResponse.ok) throw new Error("Claim assurance API unavailable");
+      .then(async ([summaryResponse, effectiveResponse, runsResponse]) => {
+        if (!summaryResponse.ok || !effectiveResponse.ok || !runsResponse.ok) throw new Error("Claim assurance API unavailable");
         setSummary(await summaryResponse.json());
+        setEffectiveSummary(await effectiveResponse.json());
         setRuns((await runsResponse.json()).runs);
       })
       .catch((reason: Error) => setError(reason.message));
@@ -97,7 +109,7 @@ export default function ClaimAssurance() {
 
   const cards = summary ? [
     ["Source units", summary.source_units],
-    ["Claim occurrences", summary.occurrences],
+    ["Claim occurrences", effectiveSummary?.total_occurrences ?? summary.occurrences],
     ["Entailment rate", `${(summary.source_entailment_rate * 100).toFixed(1)}%`],
     ["Needs review", summary.unresolved_units + summary.non_entailed_occurrences],
     ["Jobs avoided", summary.receipts.agent_jobs_avoided],
@@ -209,9 +221,15 @@ export default function ClaimAssurance() {
         </div>)}</div>
         {history.human_overrides.map((override) => <div key={override.id} className="mt-3 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"><strong>Human override: {override.decision}</strong> by {override.actor} for verification run #{override.verification_run_id}<p>{override.rationale}</p></div>)}
       </div>}
-      {summary && (
+      {summary && effectiveSummary && (
         <div className="grid gap-4 md:grid-cols-2">
-          <MetricList title="Verification verdicts" values={summary.verdicts} />
+          <MetricList title="Effective verification verdicts" values={{
+            pending: effectiveSummary.pending,
+            supported: effectiveSummary.supported,
+            contradicted: effectiveSummary.contradicted,
+            insufficient_evidence: effectiveSummary.insufficient_evidence,
+            not_applicable: effectiveSummary.not_applicable,
+          }} />
           <MetricList title="Improvement routes" values={summary.improvement_routes} />
         </div>
       )}

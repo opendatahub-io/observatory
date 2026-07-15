@@ -1,3 +1,5 @@
+import copy
+
 import pytest
 
 
@@ -387,3 +389,164 @@ async def test_legacy_claim_rows_are_backfilled_once(tmp_db):
         (claim_id,),
     )
     assert (await verification_count.fetchone())["count"] == 1
+
+
+async def test_v2_triage_uses_effective_occurrence_state_and_preserves_duplicates(
+    client, extraction_payload, tmp_db
+):
+    first = (
+        await client.post("/api/v2/claims/extraction-runs", json=extraction_payload)
+    ).json()
+    second_payload = copy.deepcopy(extraction_payload)
+    second_payload["run_key"] = "extract:RFE-43:sha256:duplicate"
+    second_payload["source_file"] = "artifacts/RFE-43/strategy.md"
+    second_payload["units"][0]["source_unit"]["unit_key"] = "unit-duplicate"
+    second_payload["units"][0]["source_unit"]["source_locator"] = "strategy.md:12"
+    second_payload["units"][0]["claims"][0]["jira_keys"] = ["RFE-43"]
+    second = (
+        await client.post("/api/v2/claims/extraction-runs", json=second_payload)
+    ).json()
+    occurrence_id = first["occurrence_ids"][0]
+
+    old_verification = await client.post("/api/v2/claims/verification-runs", json={
+        "claim_occurrence_id": occurrence_id,
+        "verifier_revision": "verify@old",
+        "evidence_context_digest": "sha256:old",
+        "verdict": "supported",
+        "severity": "info",
+        "confidence": 70,
+        "evidence": [{
+            "evidence_type": "repository_file", "uri": "repo://old",
+            "relationship": "supports",
+        }],
+    })
+    assert old_verification.status_code == 201
+    effective_verification = await client.post(
+        "/api/v2/claims/verification-runs", json={
+            "claim_occurrence_id": occurrence_id,
+            "verifier_revision": "verify@new",
+            "evidence_context_digest": "sha256:new",
+            "verdict": "contradicted",
+            "severity": "high",
+            "confidence": 96,
+            "evidence_summary": "Versioned evidence contradicts the occurrence.",
+            "evidence": [{
+                "evidence_type": "repository_file", "uri": "repo://new",
+                "relationship": "contradicts",
+            }],
+        },
+    )
+    verification_id = effective_verification.json()["id"]
+    explanation = await client.post("/api/v2/claims/explanation-runs", json={
+        "verification_run_id": verification_id,
+        "explainer_revision": "explain@new",
+        "category": "context_gap",
+        "improvement_target": "architecture context",
+        "explanation": "The versioned source was absent from generation context.",
+        "alternative_explanations": ["Retrieval may have omitted an available source."],
+        "remediation": "Add the source to versioned context.",
+        "regression_test": "Replay with the source and expect support.",
+        "human_review_required": True,
+        "evidence": [{
+            "evidence_type": "verification_log", "uri": "observatory://verification",
+            "relationship": "supports",
+        }],
+    })
+    explanation_id = explanation.json()["id"]
+    await client.post("/api/v2/claims/regression-runs", json={
+        "explanation_run_id": explanation_id,
+        "dataset_fqn": "local:test", "implementation_revision": "fixed",
+        "status": "passed", "metrics": {"accuracy": 1.0},
+    })
+
+    summary = (await client.get("/api/v2/claims/triage/summary")).json()
+    assert summary == {
+        "total_occurrences": 2,
+        "verified": 1,
+        "pending": 1,
+        "supported": 0,
+        "contradicted": 1,
+        "insufficient_evidence": 0,
+        "not_applicable": 0,
+        "explained": 1,
+        "human_review_required": 1,
+        "jira_keys_referenced": 2,
+    }
+
+    rows = (await client.get(
+        "/api/v2/claims/triage/occurrences?sort=claim&sort_dir=asc"
+    )).json()
+    assert rows["total"] == 2
+    assert {row["id"] for row in rows["occurrences"]} == {
+        occurrence_id, second["occurrence_ids"][0],
+    }
+    assert len({row["normalized_claim_id"] for row in rows["occurrences"]}) == 1
+    effective = next(row for row in rows["occurrences"] if row["id"] == occurrence_id)
+    assert effective["verdict"] == "contradicted"
+    assert effective["confidence"] == 96
+    assert effective["severity"] == "high"
+    assert effective["explanation_category"] == "context_gap"
+    assert effective["improvement_target"] == "architecture context"
+    assert effective["processing_state"] == "explanation_requires_human_review"
+    pending = next(
+        row for row in rows["occurrences"] if row["id"] == second["occurrence_ids"][0]
+    )
+    assert pending["processing_state"] == "not_verified"
+
+    filtered = (await client.get(
+        "/api/v2/claims/triage/occurrences"
+        "?verdict=contradicted&jira_key=RFE-42"
+    )).json()
+    assert [row["id"] for row in filtered["occurrences"]] == [occurrence_id]
+    assert (
+        await client.get("/api/v2/claims/triage/occurrences?verdict=supported")
+    ).json()["total"] == 0
+
+    issues = (await client.get("/api/v2/claims/triage/issues")).json()
+    by_issue = {row["jira_key"]: row for row in issues["issues"]}
+    assert by_issue["RFE-42"]["contradicted"] == 1
+    assert by_issue["RFE-43"]["pending"] == 1
+
+    explanations = (await client.get(
+        "/api/v2/claims/triage/explanations"
+        "?category=context_gap&improvement_target=architecture%20context"
+        "&jira_key=RFE-42&human_review_required=true"
+    )).json()
+    assert explanations["total"] == 1
+    assert explanations["explanations"][0]["claim_occurrence_id"] == occurrence_id
+    assert explanations["explanations"][0]["alternative_explanations"] == [
+        "Retrieval may have omitted an available source."
+    ]
+    facets = (await client.get(
+        "/api/v2/claims/triage/explanation-facets"
+    )).json()
+    assert facets["categories"] == [{"value": "context_gap", "count": 1}]
+
+    history = (await client.get(
+        f"/api/v2/claims/occurrences/{occurrence_id}/history"
+    )).json()
+    assert history["effective_verification_run_id"] == verification_id
+    assert history["effective_explanation_run_id"] == explanation_id
+    assert history["processing_state"] == "explanation_requires_human_review"
+    assert history["jira_keys"] == ["RFE-42"]
+    assert history["verification_runs"][-1]["explanation_runs"][0][
+        "regression_runs"
+    ][0]["metrics"] == {"accuracy": 1.0}
+
+    from backend.database import get_db
+
+    db = await get_db()
+    await db.execute(
+        "INSERT INTO claims (claim_text, claim_hash) VALUES ('Legacy only', 'legacy-only')"
+    )
+    legacy_id = (await (await db.execute(
+        "SELECT last_insert_rowid() AS id"
+    )).fetchone())["id"]
+    await db.execute(
+        "INSERT INTO claim_verdicts (claim_id, verdict, confidence) VALUES (?, 'supported', 99)",
+        (legacy_id,),
+    )
+    await db.commit()
+    assert (await client.get("/api/v2/claims/triage/summary")).json()[
+        "total_occurrences"
+    ] == 2
