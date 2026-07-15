@@ -36,6 +36,7 @@ const SOURCE_TYPES = [
   { value: "mlflow", label: "MLflow" },
   { value: "kubernetes", label: "Kubernetes" },
   { value: "jira", label: "Jira" },
+  { value: "github_emulator", label: "GitHub Emulator" },
   { value: "artifact_storage", label: "Artifact Storage" },
   { value: "observatory_api", label: "Observatory API" },
   { value: "custom", label: "Custom" },
@@ -78,6 +79,8 @@ function typeBadgeClasses(sourceType: string): string {
       return `${base} bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300`;
     case "jira":
       return `${base} bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300`;
+    case "github_emulator":
+      return `${base} bg-slate-100 text-slate-800 dark:bg-slate-900/40 dark:text-slate-300`;
     case "artifact_storage":
       return `${base} bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300`;
     case "observatory_api":

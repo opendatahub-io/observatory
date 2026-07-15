@@ -992,7 +992,7 @@ async def _handle_query_github(db: aiosqlite.Connection, input: dict) -> dict:
         headers["Authorization"] = f"token {token}"
 
     try:
-        async with httpx.AsyncClient(verify=False, timeout=15, headers=headers) as client:
+        async with httpx.AsyncClient(verify=False, timeout=15, follow_redirects=True, headers=headers) as client:
             if action == "list_repos":
                 if not owner:
                     return {"error": "owner is required for list_repos"}
