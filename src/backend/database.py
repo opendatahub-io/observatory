@@ -624,6 +624,117 @@ CREATE TABLE IF NOT EXISTS claim_stage_receipt_events (
 CREATE INDEX IF NOT EXISTS idx_claim_receipt_events_scope
     ON claim_stage_receipt_events(scope_key, stage, observed_at DESC);
 
+CREATE TABLE IF NOT EXISTS claim_canonical_groups (
+    id INTEGER PRIMARY KEY,
+    canonical_text TEXT NOT NULL,
+    subject_key TEXT,
+    qualifier_summary TEXT NOT NULL DEFAULT '{}',
+    policy_revision TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    retired_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_claim_canonical_groups_active
+    ON claim_canonical_groups(retired_at, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS claim_similarity_candidates (
+    id INTEGER PRIMARY KEY,
+    left_normalized_claim_id INTEGER NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
+    right_normalized_claim_id INTEGER NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
+    retrieval_method TEXT NOT NULL,
+    retrieval_score REAL NOT NULL,
+    retrieval_query TEXT NOT NULL,
+    retrieval_revision TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+      CHECK (status IN ('pending', 'decided', 'dismissed')),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CHECK (left_normalized_claim_id < right_normalized_claim_id),
+    UNIQUE(left_normalized_claim_id, right_normalized_claim_id, retrieval_revision)
+);
+CREATE INDEX IF NOT EXISTS idx_claim_similarity_candidates_status
+    ON claim_similarity_candidates(status, created_at);
+
+CREATE TABLE IF NOT EXISTS claim_equivalence_decisions (
+    id INTEGER PRIMARY KEY,
+    candidate_id INTEGER NOT NULL REFERENCES claim_similarity_candidates(id) ON DELETE CASCADE,
+    decision TEXT NOT NULL
+      CHECK (decision IN ('equivalent', 'related', 'distinct', 'needs_review')),
+    rationale TEXT NOT NULL,
+    compared_qualifiers TEXT NOT NULL,
+    decider_type TEXT NOT NULL
+      CHECK (decider_type IN ('deterministic', 'model', 'human')),
+    decider_revision TEXT NOT NULL,
+    actor TEXT,
+    confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    supersedes_decision_id INTEGER REFERENCES claim_equivalence_decisions(id)
+);
+CREATE INDEX IF NOT EXISTS idx_claim_equivalence_decisions_candidate
+    ON claim_equivalence_decisions(candidate_id, created_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS claim_canonical_memberships (
+    id INTEGER PRIMARY KEY,
+    canonical_group_id INTEGER NOT NULL
+      REFERENCES claim_canonical_groups(id) ON DELETE CASCADE,
+    normalized_claim_id INTEGER NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
+    decision_id INTEGER REFERENCES claim_equivalence_decisions(id),
+    actor TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    retired_at TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_claim_canonical_memberships_active_claim
+    ON claim_canonical_memberships(normalized_claim_id) WHERE retired_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_claim_canonical_memberships_group
+    ON claim_canonical_memberships(canonical_group_id, retired_at);
+
+CREATE TABLE IF NOT EXISTS claim_consolidation_receipts (
+    id INTEGER PRIMARY KEY,
+    run_key TEXT UNIQUE NOT NULL,
+    mode TEXT NOT NULL,
+    retrieval_revision TEXT NOT NULL,
+    decision_revision TEXT,
+    status TEXT NOT NULL CHECK (status IN ('running', 'complete', 'failed')),
+    cursor_claim_id INTEGER,
+    metrics TEXT NOT NULL DEFAULT '{}',
+    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS claim_consolidation_evaluations (
+    id INTEGER PRIMARY KEY,
+    evaluation_run_id TEXT UNIQUE NOT NULL,
+    labeled_dataset_revision TEXT NOT NULL,
+    retrieval_revision TEXT NOT NULL,
+    decision_revision TEXT NOT NULL,
+    candidate_count INTEGER NOT NULL CHECK (candidate_count >= 0),
+    labeled_pair_count INTEGER NOT NULL CHECK (labeled_pair_count >= 0),
+    equivalent_prediction_count INTEGER NOT NULL CHECK (equivalent_prediction_count >= 0),
+    true_positive_count INTEGER NOT NULL CHECK (true_positive_count >= 0),
+    false_positive_count INTEGER NOT NULL CHECK (false_positive_count >= 0),
+    false_negative_count INTEGER NOT NULL CHECK (false_negative_count >= 0),
+    precision REAL CHECK (precision IS NULL OR (precision >= 0 AND precision <= 1)),
+    recall REAL CHECK (recall IS NULL OR (recall >= 0 AND recall <= 1)),
+    false_merge_rate REAL CHECK (
+      false_merge_rate IS NULL OR (false_merge_rate >= 0 AND false_merge_rate <= 1)
+    ),
+    drift_summary TEXT NOT NULL DEFAULT '{}',
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_claim_consolidation_evaluations_created
+    ON claim_consolidation_evaluations(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS claim_consolidation_policies (
+    revision TEXT PRIMARY KEY,
+    automatic_assignment_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    kill_switch BOOLEAN NOT NULL DEFAULT TRUE,
+    minimum_confidence REAL NOT NULL DEFAULT 1.0,
+    minimum_precision REAL NOT NULL DEFAULT 0.99,
+    evaluated_precision REAL,
+    labeled_dataset_revision TEXT,
+    evaluation_run_id TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS otel_log_records (
     id INTEGER PRIMARY KEY,
     pipeline_run_id INTEGER REFERENCES pipeline_runs(id) ON DELETE CASCADE,
@@ -764,6 +875,34 @@ async def _ensure_fts(db: aiosqlite.Connection) -> None:
             );"""
         )
         await db.commit()
+
+
+async def _ensure_claim_fts(db: aiosqlite.Connection) -> None:
+    await db.executescript(
+        """CREATE VIRTUAL TABLE IF NOT EXISTS claims_fts USING fts5(
+            claim_text,
+            content='claims',
+            content_rowid='id',
+            tokenize='unicode61 remove_diacritics 2'
+        );
+        CREATE TRIGGER IF NOT EXISTS claims_fts_insert AFTER INSERT ON claims BEGIN
+            INSERT INTO claims_fts(rowid, claim_text) VALUES (new.id, new.claim_text);
+        END;
+        CREATE TRIGGER IF NOT EXISTS claims_fts_delete AFTER DELETE ON claims BEGIN
+            INSERT INTO claims_fts(claims_fts, rowid, claim_text)
+            VALUES ('delete', old.id, old.claim_text);
+        END;
+        CREATE TRIGGER IF NOT EXISTS claims_fts_update AFTER UPDATE OF claim_text ON claims BEGIN
+            INSERT INTO claims_fts(claims_fts, rowid, claim_text)
+            VALUES ('delete', old.id, old.claim_text);
+            INSERT INTO claims_fts(rowid, claim_text) VALUES (new.id, new.claim_text);
+        END;"""
+    )
+    claim_count = (await (await db.execute("SELECT COUNT(*) AS n FROM claims")).fetchone())["n"]
+    fts_count = (await (await db.execute("SELECT COUNT(*) AS n FROM claims_fts")).fetchone())["n"]
+    if claim_count != fts_count:
+        await db.execute("INSERT INTO claims_fts(claims_fts) VALUES ('rebuild')")
+    await db.commit()
 
 
 async def _backfill_claim_assurance(db: aiosqlite.Connection) -> None:
@@ -1040,12 +1179,24 @@ async def _ensure_chat_blocks_column(db: aiosqlite.Connection) -> None:
     await db.commit()
 
 
+async def _ensure_claim_consolidation_columns(db: aiosqlite.Connection) -> None:
+    cursor = await db.execute("PRAGMA table_info(claim_consolidation_policies)")
+    columns = {row["name"] for row in await cursor.fetchall()}
+    if "evaluation_run_id" not in columns:
+        await db.execute(
+            "ALTER TABLE claim_consolidation_policies ADD COLUMN evaluation_run_id TEXT"
+        )
+        await db.commit()
+
+
 async def init_schema(db: aiosqlite.Connection) -> None:
     """Apply schema directly (for tests and first-run initialization)."""
     await db.executescript(_SCHEMA_SQL)
     await db.commit()
     await _ensure_fts(db)
+    await _ensure_claim_fts(db)
     await _ensure_claim_assurance_columns(db)
     await _backfill_claim_assurance(db)
+    await _ensure_claim_consolidation_columns(db)
     await _ensure_chat_blocks_column(db)
     await db.execute("PRAGMA foreign_keys=ON")

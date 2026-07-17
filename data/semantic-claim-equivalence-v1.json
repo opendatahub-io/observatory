@@ -1,0 +1,97 @@
+{
+  "revision": "semantic-claim-equivalence-v1",
+  "description": "Human-labeled qualifier-sensitive regression pairs for semantic claim consolidation.",
+  "alias_map": {
+    "odh-cli": "rhai-cli",
+    "kubectl-odh": "rhai-cli"
+  },
+  "cases": [
+    {
+      "id": "rhai-cli-paraphrase-1",
+      "left": "rhai-cli is not part of the shipped RHOAI platform component inventory.",
+      "right": "The RHOAI platform component inventory does not include an rhai-cli component.",
+      "qualifiers": {"product_version": "3.5-ea.2", "modality": "fact", "scope": "platform component inventory"},
+      "label": "equivalent"
+    },
+    {
+      "id": "rhai-cli-paraphrase-2",
+      "left": "The RHOAI 3.5-ea.2 component inventory does not include an rhai-cli component.",
+      "right": "No rhai-cli component is present in the RHOAI 3.5-ea.2 component inventory.",
+      "qualifiers": {"product_version": "3.5-ea.2", "modality": "fact", "scope": "platform component inventory"},
+      "label": "equivalent"
+    },
+    {
+      "id": "rhai-cli-version-distinct",
+      "left": "RHOAI 3.5 does not ship an rhai-cli component.",
+      "right": "RHOAI 3.6 does not ship an rhai-cli component.",
+      "left_qualifiers": {"product_version": "3.5"},
+      "right_qualifiers": {"product_version": "3.6"},
+      "label": "distinct"
+    },
+    {
+      "id": "rhai-cli-opposite-negation",
+      "left": "RHOAI 3.5 includes an rhai-cli component.",
+      "right": "RHOAI 3.5 does not include an rhai-cli component.",
+      "qualifiers": {"product_version": "3.5", "modality": "fact"},
+      "label": "distinct"
+    },
+    {
+      "id": "rhai-cli-fact-vs-requirement",
+      "left": "RHOAI includes an rhai-cli component.",
+      "right": "RHOAI must include an rhai-cli component in a future release.",
+      "left_qualifiers": {"modality": "fact", "temporal_scope": "current"},
+      "right_qualifiers": {"modality": "requirement", "temporal_scope": "future"},
+      "label": "distinct"
+    },
+    {
+      "id": "rhai-cli-document-vs-platform",
+      "left": "The architecture inventory document does not list rhai-cli.",
+      "right": "rhai-cli does not exist anywhere in the shipped RHOAI platform.",
+      "qualifiers": {"product_version": "3.5-ea.2"},
+      "label": "related"
+    },
+    {
+      "id": "rhai-cli-different-predicate",
+      "left": "rhai-cli is absent from the RHOAI component inventory.",
+      "right": "rhai-cli uses a deprecated command-line interface.",
+      "qualifiers": {"product_version": "3.5-ea.2"},
+      "label": "related"
+    },
+    {
+      "id": "rhai-cli-alias-odh",
+      "left": "odh-cli is absent from the RHOAI component inventory.",
+      "right": "rhai-cli is not included in the RHOAI component inventory.",
+      "qualifiers": {"product_version": "3.5-ea.2", "alias_assertion": "odh-cli=rhai-cli"},
+      "label": "equivalent"
+    },
+    {
+      "id": "rhai-cli-alias-kubectl",
+      "left": "kubectl-odh is not shipped in the RHOAI component inventory.",
+      "right": "The RHOAI component inventory excludes rhai-cli.",
+      "qualifiers": {"product_version": "3.5-ea.2", "alias_assertion": "kubectl-odh=rhai-cli"},
+      "label": "equivalent"
+    },
+    {
+      "id": "rhai-cli-ambiguous-version",
+      "left": "rhai-cli is not shipped by RHOAI.",
+      "right": "The current component inventory omits rhai-cli.",
+      "left_qualifiers": {"product_version": null},
+      "right_qualifiers": {"product_version": "unresolved-current"},
+      "label": "needs_review"
+    },
+    {
+      "id": "cross-artifact-repeat",
+      "left": "The service stores verification histories immutably.",
+      "right": "Verification history records are immutable in the service.",
+      "qualifiers": {"artifact_types": ["strategy", "security-review"], "modality": "fact"},
+      "label": "equivalent"
+    },
+    {
+      "id": "one-way-implication",
+      "left": "Every production component is listed in the release inventory.",
+      "right": "rhai-cli is listed in the release inventory.",
+      "qualifiers": {"product_version": "3.5-ea.2"},
+      "label": "related"
+    }
+  ]
+}

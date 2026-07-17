@@ -107,3 +107,20 @@ sbom_push_received_total = Counter(
     "sbom_push_received_total",
     "Total SBOMs received via push",
 )
+
+# ---------------------------------------------------------------------------
+# Semantic claim consolidation
+# ---------------------------------------------------------------------------
+claim_candidate_generation_duration_seconds = Histogram(
+    "claim_candidate_generation_duration_seconds",
+    "Duration of semantic claim candidate generation runs",
+)
+claim_candidate_shortlist_size = Histogram(
+    "claim_candidate_shortlist_size",
+    "Mean bounded shortlist size per claim candidate generation batch",
+    buckets=(0, 1, 2, 5, 10, 20, 50),
+)
+claim_candidate_generation_failures_total = Counter(
+    "claim_candidate_generation_failures_total",
+    "Total semantic claim candidate generation failures",
+)

@@ -88,3 +88,71 @@ Validation:
 Discovered:
 - The full backend suite currently has 245 passing and 37 unrelated failures
   in OTLP routing, artifact parsing, collector mocks, and stale seed counts.
+
+
+## 2026-07-16
+
+Agent: codex
+
+Completed:
+- Implemented additive semantic claim consolidation for Claim Assurance v2:
+  SQLite FTS5 candidate retrieval, reproducible candidates, structured
+  equivalence decisions, canonical groups, append-only memberships, resumable
+  receipts, policy gates, and metrics.
+- Added review APIs and Hallucinations UI controls for candidate decisions,
+  canonical group inspection, group creation, reviewed merging, splitting,
+  retirement, related claims, source occurrences, and decision provenance.
+- Added ingestion-time bounded candidate generation for newly created exact text
+  identities while preserving immutable occurrence and verification histories.
+- Added a versioned labeled dataset, baseline audit script/report, additive
+  identity ADR, and migration/rollback notes.
+- Added verification-reuse opportunity reporting; actual reuse remains disabled.
+- Added rollback protection for failed reviewed group merges so rejected
+  compatibility conflicts do not persist partial human decisions.
+- Added durable consolidation evaluation records and required automatic policies
+  to reference a recorded passing evaluation run before automatic assignment can
+  run.
+- Extended the verification-reuse opportunity report with simulation-only
+  source/reused run provenance, agreement counts, estimated token/cost savings,
+  and invalidation reasons while leaving reuse disabled.
+- Extended `scripts/audit-claim-consolidation.py` to emit an
+  API-recordable evaluation payload for labeled-dataset audits while preserving
+  the non-authorizing zero-prediction baseline.
+- Added Claim Consolidation UI panels for automatic-assignment evaluation runs
+  and verification-reuse simulation/invalidation evidence without exposing any
+  automation enablement control.
+- Added `scripts/check-claim-consolidation-gates.py` and tests so operators can
+  check automatic-assignment and reuse authorization evidence before changing a
+  policy.
+- Extended the gate checker to fetch the latest evaluation and reuse simulation
+  directly from a running Observatory API with `--api-base-url`.
+- Added `GET /api/v2/claim-consolidation/gate-status` for API-visible automatic
+  assignment and verification-reuse authorization status.
+- Added checked-in synthetic passing evaluation and reuse-report fixtures to
+  exercise gate mechanics without treating them as production evidence.
+
+Validation:
+- `./.venv/bin/ruff check src/backend/crud/claim_consolidation.py src/backend/routers/claim_consolidation.py src/backend/schemas/claim_consolidation.py src/backend/database.py src/backend/metrics.py src/backend/routers/claim_assurance.py src/backend/crud/claim_assurance.py src/backend/crud/claim_triage.py src/backend/jobs/retention.py src/backend/crud/hallucinations.py src/tests/test_claim_consolidation.py scripts/audit-claim-consolidation.py` — passed
+- `./.venv/bin/pytest src/tests/test_claim_consolidation.py src/tests/test_claim_assurance.py` — 18 passed
+- `./.venv/bin/pytest src/tests/test_claim_consolidation.py` — 8 passed after
+  adding the evaluation-run policy gate
+- `./.venv/bin/pytest src/tests/test_claim_consolidation.py` — 8 passed after
+  adding reuse simulation and invalidation assertions
+- `./.venv/bin/pytest src/tests/test_claim_consolidation_audit.py src/tests/test_claim_consolidation.py src/tests/test_claim_assurance.py` — 19 passed
+- `./.venv/bin/python scripts/audit-claim-consolidation.py --dataset data/semantic-claim-equivalence-v1.json --threshold 0.20 --evaluation-run-id semantic-claim-equivalence-v1-baseline --retrieval-revision token-overlap-threshold-0.20` — emitted recordable evaluation with null precision and zero automatic predictions
+- `npm test -- ClaimConsolidation` — 1 passed
+- `npm run build` — passed with the existing Vite chunk-size warning
+- `./.venv/bin/pytest src/tests/test_claim_consolidation_gates.py` — 3 passed
+- `./.venv/bin/pytest src/tests/test_claim_consolidation.py` — 9 passed after
+  adding the gate-status endpoint
+- `npm test -- ClaimConsolidation Hallucinations` — 5 passed
+- `npm run build` — passed with the existing Vite chunk-size warning
+- `./.venv/bin/python scripts/audit-claim-consolidation.py --dataset data/semantic-claim-equivalence-v1.json --threshold 0.20` — candidate retrieval recall 1.0, candidate volume 11, automatic equivalent predictions 0
+
+Discovered:
+- Automatic consolidation is not production-authorized by the baseline dataset;
+  automatic precision is undefined because no automatic equivalent predictions
+  are emitted.
+- Full `./.venv/bin/pytest` currently reports 284 passing and 37 unrelated
+  failures in OTLP routing, artifact parser/log expectations, GitLab collector
+  mocks, org-pulse fixture expectations, and seed-count tests.

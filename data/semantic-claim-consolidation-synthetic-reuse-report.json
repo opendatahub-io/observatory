@@ -1,0 +1,70 @@
+{
+  "reuse_enabled": false,
+  "reuse_policy": {
+    "status": "simulation_only",
+    "required_compatibility": [
+      "canonical_group",
+      "product_version",
+      "temporal_scope",
+      "evidence_context_digest",
+      "verifier_revision",
+      "repository_revision",
+      "configuration_digest"
+    ]
+  },
+  "compatible_run_count": 10,
+  "opportunities": [
+    {
+      "canonical_group_id": 1001,
+      "product_version": "3.5-ea.2",
+      "temporal_scope": "current",
+      "evidence_context_digest": "sha256:synthetic-shared-context",
+      "verifier_revision": "verify-claims@synthetic-v1",
+      "repository_revision": "synthetic-repo-rev",
+      "configuration_digest": "sha256:synthetic-verifier-config",
+      "verification_run_ids": [501, 502, 503],
+      "source_verification_run_id": 501,
+      "simulated_reused_verification_run_ids": [502, 503],
+      "run_count": 3,
+      "verdict_count": 1,
+      "agreement": true,
+      "simulated_reuse_count": 2,
+      "simulated_outcome": "agree",
+      "actual_verdicts": ["supported"],
+      "estimated_saved_tokens": 1600,
+      "estimated_saved_cost_usd": 0.8
+    }
+  ],
+  "simulation": {
+    "simulated_reused_run_count": 8,
+    "simulated_agreeing_reuse_count": 8,
+    "simulated_disagreeing_reuse_count": 0,
+    "agreement_rate": 1.0,
+    "estimated_saved_tokens": 6400,
+    "estimated_saved_cost_usd": 3.2
+  },
+  "invalidation": {
+    "groups_with_invalidation_count": 2,
+    "reason_group_counts": {
+      "product_version": 1,
+      "temporal_scope": 0,
+      "evidence_context_digest": 1,
+      "verifier_revision": 1,
+      "repository_revision": 0,
+      "configuration_digest": 0
+    },
+    "groups": [
+      {
+        "canonical_group_id": 1002,
+        "verification_run_count": 3,
+        "reasons": ["product_version"]
+      },
+      {
+        "canonical_group_id": 1003,
+        "verification_run_count": 2,
+        "reasons": ["evidence_context_digest", "verifier_revision"]
+      }
+    ]
+  },
+  "notes": "Synthetic passing reuse simulation used to test gate-check tooling. Do not use to authorize verification reuse in production."
+}

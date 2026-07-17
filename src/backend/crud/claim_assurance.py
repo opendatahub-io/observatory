@@ -295,11 +295,18 @@ async def get_occurrence_history(db: aiosqlite.Connection, occurrence_id: int) -
     cursor = await db.execute(
         """SELECT co.*, c.claim_hash, csu.source_locator,
                   csu.original_text AS source_unit_text, cer.run_key,
-                  cer.source_file, cer.pipeline_slug, cer.artifact_type
+                  cer.source_file, cer.pipeline_slug, cer.artifact_type,
+                  membership.canonical_group_id, canonical.canonical_text
            FROM claim_occurrences co
            JOIN claims c ON c.id = co.normalized_claim_id
            JOIN claim_source_units csu ON csu.id = co.source_unit_id
            JOIN claim_extraction_runs cer ON cer.id = csu.extraction_run_id
+           LEFT JOIN claim_canonical_memberships membership
+             ON membership.normalized_claim_id = co.normalized_claim_id
+            AND membership.retired_at IS NULL
+           LEFT JOIN claim_canonical_groups canonical
+             ON canonical.id = membership.canonical_group_id
+            AND canonical.retired_at IS NULL
            WHERE co.id = ?""",
         (occurrence_id,),
     )
@@ -825,12 +832,19 @@ async def list_occurrences_for_verification(
         f"""SELECT co.*, c.claim_hash, csu.source_locator, csu.original_text AS source_unit_text,
                    csu.preceding_context, csu.following_context,
                    cee.entailed AS extraction_entailed, cee.coverage_result,
-                   cee.decontextualization_result, cer.source_file, cer.pipeline_slug
+                   cee.decontextualization_result, cer.source_file, cer.pipeline_slug,
+                   membership.canonical_group_id, canonical.canonical_text
             FROM claim_occurrences co
             JOIN claims c ON c.id = co.normalized_claim_id
             JOIN claim_source_units csu ON csu.id = co.source_unit_id
             JOIN claim_extraction_runs cer ON cer.id = csu.extraction_run_id
             JOIN claim_extraction_evaluations cee ON cee.claim_occurrence_id = co.id
+            LEFT JOIN claim_canonical_memberships membership
+              ON membership.normalized_claim_id = co.normalized_claim_id
+             AND membership.retired_at IS NULL
+            LEFT JOIN claim_canonical_groups canonical
+              ON canonical.id = membership.canonical_group_id
+             AND canonical.retired_at IS NULL
             WHERE {' AND '.join(where)} ORDER BY co.id LIMIT ?""",  # noqa: S608
         params,
     )

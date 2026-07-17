@@ -1,0 +1,28 @@
+{
+  "evaluation_run_id": "synthetic-semantic-consolidation-pass-v1",
+  "labeled_dataset_revision": "synthetic-semantic-claim-equivalence-v1",
+  "retrieval_revision": "synthetic-fts5-v1",
+  "decision_revision": "synthetic-mutual-entailment-v1",
+  "candidate_count": 12,
+  "labeled_pair_count": 12,
+  "equivalent_prediction_count": 5,
+  "true_positive_count": 5,
+  "false_positive_count": 0,
+  "false_negative_count": 0,
+  "precision": 1.0,
+  "recall": 1.0,
+  "false_merge_rate": 0.0,
+  "drift_summary": {
+    "artifact_type": {
+      "strategy": 0.0,
+      "security-review": 0.0,
+      "test-output": 0.0
+    },
+    "claim_type": {
+      "scope": 0.0,
+      "architecture": 0.0
+    },
+    "note": "Synthetic fixture for exercising gate mechanics only. Not production authorization evidence."
+  },
+  "notes": "Synthetic passing evaluation used to test gate-check tooling. Do not use to authorize automatic consolidation in production."
+}

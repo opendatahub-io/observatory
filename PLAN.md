@@ -35,8 +35,15 @@
 
 ---
 
+## Active Plans
+
+- [Semantic Claim Consolidation](docs/plans/semantic-claim-consolidation-plan.md) — Reviewed grouping implemented; automatic consolidation and verification reuse remain gated by live evaluation
+
+---
+
 ## Active Tasks
 
+- [task-semantic-claim-consolidation.md](docs/tasks/current/task-semantic-claim-consolidation.md) — Add semantic candidate retrieval, reviewed canonical groups, and reuse evaluation
 - [task-claim-assurance-loop.md](docs/tasks/done/task-claim-assurance-loop.md) — Claimify-aligned extraction assurance, provenance, and feedback loop (complete)
 - [task-migrate-hallucinations-ux-to-claim-assurance.md](docs/tasks/done/task-migrate-hallucinations-ux-to-claim-assurance.md) — Present immutable v2 verdicts and explanations in the Hallucinations triage UX (complete)
 

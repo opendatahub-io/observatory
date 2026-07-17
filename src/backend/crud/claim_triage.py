@@ -162,6 +162,7 @@ async def list_triage_occurrences(
                   co.original_text, co.claim_type, co.modality, co.product_version,
                   co.temporal_scope, c.claim_hash, csu.source_locator,
                   cer.source_file, cer.pipeline_slug, cer.artifact_type,
+                  membership.canonical_group_id, canonical.canonical_text,
                   lv.id AS verification_run_id, lv.verdict, lv.severity,
                   lv.confidence, lv.evidence_summary, lv.created_at AS verified_at,
                   le.id AS explanation_run_id, le.category AS explanation_category,
@@ -174,6 +175,12 @@ async def list_triage_occurrences(
             JOIN claims c ON c.id = co.normalized_claim_id
             JOIN claim_source_units csu ON csu.id = co.source_unit_id
             JOIN claim_extraction_runs cer ON cer.id = csu.extraction_run_id
+            LEFT JOIN claim_canonical_memberships membership
+              ON membership.normalized_claim_id = co.normalized_claim_id
+             AND membership.retired_at IS NULL
+            LEFT JOIN claim_canonical_groups canonical
+              ON canonical.id = membership.canonical_group_id
+             AND canonical.retired_at IS NULL
             LEFT JOIN latest_verification lv ON lv.claim_occurrence_id = co.id
             LEFT JOIN latest_explanation le ON le.verification_run_id = lv.id
             WHERE {where_sql}

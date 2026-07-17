@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-pipeline.local/schemas/staged-extraction-v1.json",
+  "title": "Staged claim extraction run",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_key", "source_file", "pipeline_slug", "artifact_type",
+    "artifact_digest", "extractor_revision", "repository_revision", "model",
+    "harness", "configuration_digest", "decontextualization_mode", "configuration",
+    "segmentation_version", "segmentation_configuration_digest",
+    "preceding_context_units", "following_context_units", "units"
+  ],
+  "dependentRequired": {
+    "observatory_run_id": ["observatory_occurrence_ids"],
+    "observatory_occurrence_ids": ["observatory_run_id"]
+  },
+  "properties": {
+    "run_key": {"type": "string", "minLength": 1},
+    "source_file": {"type": "string", "minLength": 1},
+    "pipeline_slug": {"type": "string", "minLength": 1},
+    "artifact_type": {"enum": ["rfe", "strategy", "security_review", "epic", "investigation", "code_generation"]},
+    "artifact_digest": {"type": "string", "minLength": 1},
+    "extractor_revision": {"type": "string", "minLength": 1},
+    "repository_revision": {"type": "string", "minLength": 1},
+    "model": {"type": "string", "minLength": 1},
+    "harness": {"type": "string", "minLength": 1},
+    "configuration_digest": {"type": "string", "minLength": 1},
+    "decontextualization_mode": {"enum": ["basic", "full"]},
+    "configuration": {"$ref": "#/$defs/segmentationConfiguration"},
+    "segmentation_version": {"type": "string", "minLength": 1},
+    "segmentation_configuration_digest": {"type": "string", "minLength": 1},
+    "preceding_context_units": {"type": "integer", "minimum": 0},
+    "following_context_units": {"type": "integer", "minimum": 0},
+    "observatory_run_id": {"type": "integer", "minimum": 1},
+    "observatory_occurrence_ids": {
+      "type": "array",
+      "items": {"type": "integer", "minimum": 1},
+      "uniqueItems": true
+    },
+    "units": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/unit"}
+    }
+  },
+  "$defs": {
+    "segmentationConfiguration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["segmenter_version", "preceding_units", "following_units", "artifact_type", "artifact_type_override"],
+      "properties": {
+        "segmenter_version": {"type": "string", "minLength": 1},
+        "preceding_units": {"type": "integer", "minimum": 0},
+        "following_units": {"type": "integer", "minimum": 0},
+        "artifact_type": {"enum": ["rfe", "strategy", "security_review", "epic", "investigation", "code_generation", null]},
+        "artifact_type_override": {"type": "object"}
+      }
+    },
+    "sourceUnit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_locator"],
+      "properties": {
+        "id": {"type": "string"},
+        "unit_key": {"type": "string"},
+        "kind": {"type": "string"},
+        "unit_kind": {"type": "string"},
+        "text": {"type": "string"},
+        "original_text": {"type": "string"},
+        "source_locator": {"type": "string"},
+        "line_start": {"type": "integer", "minimum": 1},
+        "line_end": {"type": "integer", "minimum": 1},
+        "heading_path": {"type": "array", "items": {"type": "string"}},
+        "preceding_context": {"type": "array", "items": {"type": "string"}},
+        "following_context": {"type": "array", "items": {"type": "string"}},
+        "list_preamble": {"type": ["string", "null"]}
+      },
+      "anyOf": [
+        {"required": ["id", "kind", "text"]},
+        {"required": ["unit_key", "unit_kind", "original_text"]}
+      ]
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "evaluator_revision"],
+      "properties": {
+        "classification": {"enum": ["verifiable", "mixed", "unverifiable"]},
+        "selected_text": {"type": ["string", "null"]},
+        "rationale": {"type": ["string", "null"]},
+        "evaluator_revision": {"type": ["string", "null"]}
+      }
+    },
+    "ambiguity": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["status", "evaluator_revision"],
+      "properties": {
+        "status": {"enum": ["none", "resolved", "unresolved"]},
+        "ambiguity_types": {"type": "array", "items": {"type": "string"}},
+        "clarified_text": {"type": ["string", "null"]},
+        "resolution_context": {"type": "array", "items": {"type": "string"}},
+        "rationale": {"type": ["string", "null"]},
+        "evaluator_revision": {"type": ["string", "null"]}
+      }
+    },
+    "coverageElement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["element_text", "element_kind", "coverage"],
+      "properties": {
+        "element_text": {"type": "string", "minLength": 1},
+        "element_kind": {"enum": ["verifiable", "unverifiable"]},
+        "coverage": {"enum": ["explicit", "implicit", "omitted", "included"]},
+        "rationale": {"type": ["string", "null"]}
+      }
+    },
+    "evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evaluator_revision", "entailed", "coverage_result", "coverage_elements", "decontextualization_result", "evidence"],
+      "properties": {
+        "evaluator_revision": {"type": "string", "minLength": 1},
+        "entailed": {"type": "boolean"},
+        "entailment_rationale": {"type": ["string", "null"]},
+        "coverage_result": {"enum": ["complete", "partial", "failed"]},
+        "coverage_elements": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/coverageElement"}},
+        "decontextualization_result": {"enum": ["desirable", "undesirable", "self_contained", "needs_review", "not_sampled"]},
+        "maximally_contextualized_claim": {"type": ["string", "null"]},
+        "extracted_retrieval_digest": {"type": ["string", "null"]},
+        "comparison_retrieval_digest": {"type": ["string", "null"]},
+        "evidence_context_digest": {"type": ["string", "null"]},
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/evidenceRecord"}
+        }
+      },
+      "allOf": [{
+        "if": {
+          "properties": {
+            "decontextualization_result": {"enum": ["desirable", "undesirable"]}
+          },
+          "required": ["decontextualization_result"]
+        },
+        "then": {
+          "required": [
+            "maximally_contextualized_claim", "extracted_retrieval_digest",
+            "comparison_retrieval_digest", "evidence_context_digest"
+          ],
+          "properties": {
+            "maximally_contextualized_claim": {"type": "string", "minLength": 1},
+            "extracted_retrieval_digest": {"type": "string", "minLength": 1},
+            "comparison_retrieval_digest": {"type": "string", "minLength": 1},
+            "evidence_context_digest": {"type": "string", "minLength": 1}
+          }
+        }
+      }]
+    },
+    "evidenceRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_type"],
+      "properties": {
+        "evidence_type": {"type": "string", "minLength": 1},
+        "uri": {"type": ["string", "null"]},
+        "repository_revision": {"type": ["string", "null"]},
+        "artifact_digest": {"type": ["string", "null"]},
+        "source_locator": {"type": ["string", "null"]},
+        "query": {"type": ["string", "null"]},
+        "excerpt": {"type": ["string", "null"]},
+        "relationship": {"type": ["string", "null"]},
+        "authority": {"type": ["string", "null"]},
+        "product_version": {"type": ["string", "null"]},
+        "retrieved_at": {"type": ["string", "null"]}
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claim_text", "claim_type", "original_text", "accepted", "evaluation"],
+      "properties": {
+        "claim_text": {"type": "string", "minLength": 1},
+        "claim_type": {"enum": ["factual", "architectural", "security", "scope", "attribution"]},
+        "original_text": {"type": "string", "minLength": 1},
+        "accepted": {"type": "boolean"},
+        "modality": {"type": ["string", "null"]},
+        "product_version": {"type": ["string", "null"]},
+        "temporal_scope": {"type": ["string", "null"]},
+        "clarification": {"type": ["string", "null"]},
+        "jira_keys": {"type": "array", "items": {"type": "string"}},
+        "evaluation": {"$ref": "#/$defs/evaluation"}
+      }
+    },
+    "unit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_unit", "selection", "claims"],
+      "properties": {
+        "source_unit": {"$ref": "#/$defs/sourceUnit"},
+        "selection": {"$ref": "#/$defs/selection"},
+        "ambiguity": {"$ref": "#/$defs/ambiguity"},
+        "claims": {"type": "array", "items": {"$ref": "#/$defs/claim"}}
+      }
+    }
+  }
+}

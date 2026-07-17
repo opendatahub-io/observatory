@@ -12,6 +12,12 @@ TELEMETRY_SPANS_RETENTION_DAYS = 90
 PROVENANCE_RETENTION_DAYS = 180  # run_commands, run_packages, run_containers
 
 RUNTIME_DATA_TABLES = [
+    "claim_canonical_memberships",
+    "claim_equivalence_decisions",
+    "claim_similarity_candidates",
+    "claim_canonical_groups",
+    "claim_consolidation_receipts",
+    "claim_consolidation_evaluations",
     "claim_evidence_records",
     "claim_regression_runs",
     "claim_stage_receipt_events",

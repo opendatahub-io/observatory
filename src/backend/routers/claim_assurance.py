@@ -18,6 +18,7 @@ from backend.crud.claim_assurance import (
     get_occurrence_history,
 )
 from backend.database import get_db
+from backend.crud.claim_consolidation import generate_candidates
 from backend.crud.claim_triage import (
     get_triage_explanation_facets,
     get_triage_issues,
@@ -34,6 +35,7 @@ from backend.schemas.claim_assurance import (
     StageReceiptEventInput,
     VerificationRunInput,
 )
+from backend.schemas.claim_consolidation import CandidateGenerationInput
 
 router = APIRouter(prefix="/api/v2/claims", tags=["claim-assurance"])
 
@@ -145,7 +147,32 @@ async def ingest_extraction_run(
     data: ExtractionRunInput, db: aiosqlite.Connection = Depends(get_db)
 ):
     try:
-        return await create_extraction_run(db, data)
+        result = await create_extraction_run(db, data)
+        if result.get("created") and result["occurrence_ids"]:
+            rows = await (await db.execute(
+                """SELECT DISTINCT normalized_claim_id FROM claim_occurrences
+                   WHERE id IN ({})""".format(
+                    ",".join("?" for _ in result["occurrence_ids"])
+                ),
+                result["occurrence_ids"],
+            )).fetchall()
+            created_candidates = 0
+            for row in rows:
+                generated = await generate_candidates(db, CandidateGenerationInput(
+                    run_key=(
+                        f"ingestion:{result['id']}:{row['normalized_claim_id']}:sqlite-fts5-v1"
+                    ),
+                    retrieval_revision="sqlite-fts5-v1",
+                    claim_id=row["normalized_claim_id"],
+                    batch_size=1,
+                    shortlist_size=10,
+                ))
+                created_candidates += generated["created"]
+            result["candidate_generation"] = {
+                "retrieval_revision": "sqlite-fts5-v1",
+                "created": created_candidates,
+            }
+        return result
     except ExtractionRunConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

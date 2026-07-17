@@ -564,6 +564,13 @@ async def get_explanation_categories(db: aiosqlite.Connection) -> list[dict]:
 async def clear_all_claims(db: aiosqlite.Connection) -> dict:
     """Delete legacy and versioned claim-assurance data."""
     tables = [
+        "claim_canonical_memberships",
+        "claim_equivalence_decisions",
+        "claim_similarity_candidates",
+        "claim_canonical_groups",
+        "claim_consolidation_receipts",
+        "claim_consolidation_evaluations",
+        "claim_consolidation_policies",
         "claim_evidence_records",
         "claim_regression_runs",
         "claim_stage_receipt_events",

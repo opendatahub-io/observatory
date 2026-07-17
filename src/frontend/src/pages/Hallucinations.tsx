@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { X } from "lucide-react";
 
+import ClaimConsolidation from "../components/ClaimConsolidation";
+
 import {
   buildOccurrenceParams,
   processingStateLabel,
@@ -46,6 +48,8 @@ interface Occurrence {
   human_review_required?: number;
   processing_state: string;
   override_count: number;
+  canonical_group_id?: number;
+  canonical_text?: string;
 }
 
 interface Evidence {
@@ -145,7 +149,7 @@ function Badge({ value, className = "" }: { value: string; className?: string })
 
 function Hallucinations() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [activeTab, setActiveTab] = useState<"claims" | "issues" | "explanations">("claims");
+  const [activeTab, setActiveTab] = useState<"claims" | "issues" | "explanations" | "groups">("claims");
   const [summary, setSummary] = useState<Summary | null>(null);
   const [types, setTypes] = useState<TypeCount[]>([]);
   const [occurrences, setOccurrences] = useState<Occurrence[]>([]);
@@ -292,7 +296,7 @@ function Hallucinations() {
     </div>}
 
     <div className="mb-6 flex border-b border-gray-200 dark:border-gray-700">
-      {(["claims", "issues", "explanations"] as const).map((tab) => <button key={tab} onClick={() => setActiveTab(tab)} className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium ${activeTab === tab ? "border-primary-600 text-primary-600" : "border-transparent text-gray-500"}`}>{tab === "claims" ? "By occurrence" : tab === "issues" ? "By issue" : "Explanations"}</button>)}
+      {(["claims", "issues", "explanations", "groups"] as const).map((tab) => <button key={tab} onClick={() => setActiveTab(tab)} className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium ${activeTab === tab ? "border-primary-600 text-primary-600" : "border-transparent text-gray-500"}`}>{tab === "claims" ? "By occurrence" : tab === "issues" ? "By issue" : tab === "groups" ? "Canonical groups" : "Explanations"}</button>)}
     </div>
 
     {activeTab === "claims" && <>
@@ -312,7 +316,7 @@ function Hallucinations() {
           {["claim", "type", "verdict", "confidence", "source"].map((column) => <th key={column} onClick={() => toggleSort(column)} className="cursor-pointer px-4 py-3">{column}{sort === column ? sortDir === "asc" ? " ▲" : " ▼" : ""}</th>)}
           <th>Severity</th><th>Explanation</th><th>Jira</th>
         </tr></thead><tbody className="divide-y dark:divide-gray-700">{occurrences.map((occurrence) => <tr key={occurrence.id} onClick={() => selectOccurrence(occurrence.id)} className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/40">
-          <td className="max-w-xl px-4 py-3"><span className="mr-2 text-xs text-gray-400">#{occurrence.id}</span>{occurrence.claim_text}</td>
+          <td className="max-w-xl px-4 py-3"><span className="mr-2 text-xs text-gray-400">#{occurrence.id}</span>{occurrence.claim_text}{occurrence.canonical_group_id && <div className="mt-1 text-xs text-primary-600">Group #{occurrence.canonical_group_id}: {occurrence.canonical_text}</div>}</td>
           <td><Badge value={occurrence.claim_type} className={TYPE_CLASSES[occurrence.claim_type]} /></td>
           <td>{occurrence.verdict ? <Badge value={occurrence.verdict} className={verdictClass(occurrence.verdict)} /> : <Badge value="not verified" />}</td>
           <td>{occurrence.confidence == null ? "—" : `${occurrence.confidence}%`}</td>
@@ -339,6 +343,8 @@ function Hallucinations() {
       {explanationTotal > 50 && <Pagination page={explanationPage} pages={Math.ceil(explanationTotal / 50)} setPage={setExplanationPage} />}
     </>}
 
+    {activeTab === "groups" && <ClaimConsolidation />}
+
     {(history || loadingHistory) && <HistoryModal history={history} loading={loadingHistory} close={closeHistory} />}
   </div>;
 }
@@ -347,7 +353,7 @@ function HistoryModal({ history, loading, close }: { history: History | null; lo
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={close}><div className="flex h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl dark:bg-gray-800" onClick={(event) => event.stopPropagation()}>
     <div className="flex items-center justify-between border-b px-6 py-3 dark:border-gray-700"><div className="font-semibold">{history ? `Occurrence #${history.occurrence.id}` : "Loading occurrence…"}</div><button onClick={close}><X size={18} /></button></div>
     <div className="flex-1 overflow-y-auto p-6">{loading || !history ? <div className="text-gray-500">Loading immutable history…</div> : <div className="space-y-6">
-      <div><div className="flex flex-wrap gap-2"><Badge value={history.occurrence.claim_type} className={TYPE_CLASSES[history.occurrence.claim_type]} /><Badge value={processingStateLabel(history.processing_state)} />{history.jira_keys.map((key) => <Badge key={key} value={key} />)}</div><p className="mt-3 text-lg">{history.occurrence.claim_text}</p><div className="mt-2 font-mono text-xs text-gray-500">{history.occurrence.source_file} · {history.occurrence.source_locator}</div>{history.occurrence.original_text && <blockquote className="mt-2 border-l-2 pl-3 text-sm text-gray-500">{history.occurrence.original_text}</blockquote>}</div>
+      <div><div className="flex flex-wrap gap-2"><Badge value={history.occurrence.claim_type} className={TYPE_CLASSES[history.occurrence.claim_type]} /><Badge value={processingStateLabel(history.processing_state)} />{history.occurrence.canonical_group_id && <Badge value={`canonical group ${history.occurrence.canonical_group_id}`} />}{history.jira_keys.map((key) => <Badge key={key} value={key} />)}</div><p className="mt-3 text-lg">{history.occurrence.claim_text}</p>{history.occurrence.canonical_text && <p className="mt-1 text-sm text-primary-600">Canonical label: {history.occurrence.canonical_text}</p>}<div className="mt-2 font-mono text-xs text-gray-500">{history.occurrence.source_file} · {history.occurrence.source_locator}</div>{history.occurrence.original_text && <blockquote className="mt-2 border-l-2 pl-3 text-sm text-gray-500">{history.occurrence.original_text}</blockquote>}</div>
       {history.verification_runs.length === 0 ? <EmptyState text="Not verified. No immutable verification run exists for this occurrence." /> : <div className="space-y-4"><h2 className="font-semibold">Verification and explanation history</h2>{history.verification_runs.map((verification) => <div key={verification.id} className={`rounded-lg border p-4 dark:border-gray-700 ${verification.id === history.effective_verification_run_id ? "ring-2 ring-primary-400" : ""}`}>
         <div className="flex flex-wrap items-center gap-2"><Badge value={verification.verdict} className={verdictClass(verification.verdict)} />{verification.severity && <Badge value={verification.severity} />}{verification.id === history.effective_verification_run_id && <Badge value="effective" className="bg-primary-100 text-primary-800" />}<span className="text-xs text-gray-500">run #{verification.id} · {verification.confidence}% · {verification.verifier_revision}</span></div>
         {verification.evidence_summary && <p className="mt-2 text-sm">{verification.evidence_summary}</p>}<EvidenceList evidence={verification.evidence} />
