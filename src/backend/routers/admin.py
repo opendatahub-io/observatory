@@ -3,9 +3,10 @@
 import logging
 import os
 from pathlib import Path
+from typing import Optional
 
 import aiosqlite
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 import backend.config
 from backend.database import get_db
@@ -85,3 +86,59 @@ async def run_seed(db: aiosqlite.Connection = Depends(get_db)):
     count = await seed_database(db, pipelines)
     log.info("Seeded %d pipelines from %s", count, source)
     return {"seeded": count, "source": source}
+
+
+@router.post("/backfill-traces")
+async def backfill_traces(
+    db: aiosqlite.Connection = Depends(get_db),
+    pipeline: Optional[str] = Query(default=None, description="Pipeline slug filter"),
+    status: Optional[str] = Query(default=None, description="Run status filter (e.g. 'failed')"),
+    since: Optional[str] = Query(default=None, description="Only runs started after (ISO-8601)"),
+    until: Optional[str] = Query(default=None, description="Only runs started before (ISO-8601)"),
+    limit: int = Query(default=500, ge=1, le=5000, description="Max runs to reset"),
+):
+    """Reset artifacts_scraped for runs missing job traces so the collector re-scrapes them."""
+    where = [
+        "pr.artifacts_scraped = TRUE",
+        "pr.id NOT IN (SELECT DISTINCT pipeline_run_id FROM job_artifacts WHERE source = 'job_trace')",
+    ]
+    params: list = []
+
+    if pipeline:
+        where.append("p.slug = ?")
+        params.append(pipeline)
+    if status:
+        where.append("pr.status = ?")
+        params.append(status)
+    if since:
+        where.append("pr.started_at >= ?")
+        params.append(since)
+    if until:
+        where.append("pr.started_at <= ?")
+        params.append(until)
+
+    where_clause = " AND ".join(where)
+    params.append(limit)
+
+    cursor = await db.execute(
+        f"""
+        SELECT pr.id FROM pipeline_runs pr
+        JOIN pipelines p ON pr.pipeline_id = p.id
+        WHERE {where_clause}
+        ORDER BY pr.id DESC
+        LIMIT ?
+        """,
+        params,
+    )
+    run_ids = [row[0] for row in await cursor.fetchall()]
+
+    if run_ids:
+        placeholders = ",".join("?" * len(run_ids))
+        await db.execute(
+            f"UPDATE pipeline_runs SET artifacts_scraped = FALSE, artifact_scrape_attempts = 0 WHERE id IN ({placeholders})",
+            run_ids,
+        )
+        await db.commit()
+
+    log.info("Backfill-traces: reset %d run(s)", len(run_ids))
+    return {"reset": len(run_ids)}

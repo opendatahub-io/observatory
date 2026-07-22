@@ -85,7 +85,12 @@ async def run_collector_cycle(db) -> None:
             )
 
             # --- Artifact scraping for runs not yet processed ---
-            await _scrape_pending_artifacts(db, pipeline_dict)
+            artifact_errors = await _scrape_pending_artifacts(db, pipeline_dict)
+            if artifact_errors:
+                logger.warning(
+                    "Pipeline %s: %d artifact scrape error(s): %s",
+                    slug, len(artifact_errors), "; ".join(artifact_errors[:3]),
+                )
 
             # --- Data repo collection ---
             try:
@@ -121,8 +126,14 @@ async def run_collector_cycle(db) -> None:
     logger.info("Collector cycle complete")
 
 
-async def _scrape_pending_artifacts(db, pipeline: dict) -> None:
-    """Download artifacts for runs that have not yet been scraped."""
+_MAX_SCRAPE_ATTEMPTS = 5
+
+
+async def _scrape_pending_artifacts(db, pipeline: dict) -> list[str]:
+    """Download artifacts for runs that have not yet been scraped.
+
+    Returns a list of error messages (empty on full success).
+    """
     pipeline_id = pipeline["id"]
     slug = pipeline.get("slug", "?")
 
@@ -136,7 +147,7 @@ async def _scrape_pending_artifacts(db, pipeline: dict) -> None:
     pending_runs = await cursor.fetchall()
 
     if not pending_runs:
-        return
+        return []
 
     logger.info(
         "Pipeline %s: %d run(s) pending artifact scraping",
@@ -144,16 +155,46 @@ async def _scrape_pending_artifacts(db, pipeline: dict) -> None:
         len(pending_runs),
     )
 
+    errors: list[str] = []
     for run_row in pending_runs:
         run = dict(run_row)
+        run_ext = run.get("external_id", "?")
+        attempts = run.get("artifact_scrape_attempts", 0) or 0
+
+        if attempts >= _MAX_SCRAPE_ATTEMPTS:
+            logger.warning(
+                "Pipeline %s: run %s exceeded %d scrape attempts — marking as scraped",
+                slug, run_ext, _MAX_SCRAPE_ATTEMPTS,
+            )
+            await db.execute(
+                "UPDATE pipeline_runs SET artifacts_scraped = TRUE WHERE id = ?",
+                (run["id"],),
+            )
+            await db.commit()
+            continue
+
         try:
-            await download_and_process_artifacts(db, pipeline, run)
+            result = await download_and_process_artifacts(db, pipeline, run)
+            if result and result.get("error"):
+                await db.execute(
+                    "UPDATE pipeline_runs SET artifact_scrape_attempts = ? WHERE id = ?",
+                    (attempts + 1, run["id"]),
+                )
+                await db.commit()
+                errors.append(f"run {run_ext}: {result['error']}")
         except Exception:
             logger.exception(
                 "Pipeline %s: artifact download failed for run %s",
-                slug,
-                run.get("external_id", "?"),
+                slug, run_ext,
             )
+            await db.execute(
+                "UPDATE pipeline_runs SET artifact_scrape_attempts = ? WHERE id = ?",
+                (attempts + 1, run["id"]),
+            )
+            await db.commit()
+            errors.append(f"run {run_ext}: unhandled exception")
+
+    return errors
 
 
 async def collector_loop() -> None:

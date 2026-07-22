@@ -1189,6 +1189,16 @@ async def _ensure_claim_consolidation_columns(db: aiosqlite.Connection) -> None:
         await db.commit()
 
 
+async def _ensure_artifact_scrape_attempts_column(db: aiosqlite.Connection) -> None:
+    cursor = await db.execute("PRAGMA table_info(pipeline_runs)")
+    columns = {row["name"] for row in await cursor.fetchall()}
+    if "artifact_scrape_attempts" not in columns:
+        await db.execute(
+            "ALTER TABLE pipeline_runs ADD COLUMN artifact_scrape_attempts INTEGER DEFAULT 0"
+        )
+        await db.commit()
+
+
 async def init_schema(db: aiosqlite.Connection) -> None:
     """Apply schema directly (for tests and first-run initialization)."""
     await db.executescript(_SCHEMA_SQL)
@@ -1199,4 +1209,5 @@ async def init_schema(db: aiosqlite.Connection) -> None:
     await _backfill_claim_assurance(db)
     await _ensure_claim_consolidation_columns(db)
     await _ensure_chat_blocks_column(db)
+    await _ensure_artifact_scrape_attempts_column(db)
     await db.execute("PRAGMA foreign_keys=ON")

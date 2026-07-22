@@ -2,6 +2,7 @@
 
 import io
 import logging
+import re
 import zipfile
 from urllib.parse import urlparse
 
@@ -23,19 +24,11 @@ def _project_id_from_pipeline(pipeline: dict) -> str | None:
     return pipeline.get("platform_project_id")
 
 
-async def download_and_process_artifacts(db, pipeline: dict, run: dict) -> None:
+async def download_and_process_artifacts(db, pipeline: dict, run: dict) -> dict | None:
     """Download artifacts for a pipeline run and dispatch to parsers.
 
-    Parameters
-    ----------
-    db:
-        An open aiosqlite database connection.
-    pipeline:
-        A dict representing a row from the ``pipelines`` table.  Must include
-        ``platform``, ``repo_url``, and ``platform_project_id``.
-    run:
-        A dict representing a row from the ``pipeline_runs`` table.  Must
-        include ``id``, ``external_id``, and ``pipeline_id``.
+    Returns None on success, or a dict ``{"error": "..."}`` if the job-listing
+    request failed (the run is NOT marked as scraped so it can be retried).
     """
 
     # Only process GitLab pipelines.
@@ -44,7 +37,7 @@ async def download_and_process_artifacts(db, pipeline: dict, run: dict) -> None:
             "Skipping artifact download for non-GitLab pipeline %s",
             pipeline.get("slug", "?"),
         )
-        return
+        return None
 
     token = None
     try:
@@ -61,7 +54,7 @@ async def download_and_process_artifacts(db, pipeline: dict, run: dict) -> None:
             "GitLab token not configured — skipping artifact download for run %s",
             run.get("external_id"),
         )
-        return
+        return {"error": "GitLab token not configured"}
 
     repo_url = pipeline.get("repo_url", "")
     project_id = _project_id_from_pipeline(pipeline)
@@ -70,7 +63,7 @@ async def download_and_process_artifacts(db, pipeline: dict, run: dict) -> None:
             "Pipeline %s missing repo_url or platform_project_id — cannot download artifacts",
             pipeline.get("slug", "?"),
         )
-        return
+        return {"error": "Missing repo_url or platform_project_id"}
 
     base_url = _gitlab_api_base(repo_url)
     headers = {"PRIVATE-TOKEN": token}
@@ -95,8 +88,7 @@ async def download_and_process_artifacts(db, pipeline: dict, run: dict) -> None:
                 pipeline_ext_id,
                 exc,
             )
-            await _mark_artifacts_scraped(db, run_id)
-            return
+            return {"error": f"HTTP error listing jobs: {exc}"}
 
         if resp.status_code != 200:
             logger.warning(
@@ -104,8 +96,7 @@ async def download_and_process_artifacts(db, pipeline: dict, run: dict) -> None:
                 pipeline_ext_id,
                 resp.status_code,
             )
-            await _mark_artifacts_scraped(db, run_id)
-            return
+            return {"error": f"Job listing failed: HTTP {resp.status_code}"}
 
         jobs = resp.json()
         if not isinstance(jobs, list):
@@ -115,25 +106,33 @@ async def download_and_process_artifacts(db, pipeline: dict, run: dict) -> None:
                 type(jobs).__name__,
             )
             await _mark_artifacts_scraped(db, run_id)
-            return
+            return None
 
-        # Step 2: download artifacts from each job that has them
+        # Step 2: download artifacts and traces from each job
         for job in jobs:
             job_id = job.get("id")
-            # GitLab sets artifacts_file when a job has downloadable artifacts.
-            if not job.get("artifacts_file") and not job.get("artifacts"):
-                logger.debug(
-                    "Job %s has no artifacts — skipping",
-                    job_id,
-                )
-                continue
+            job_name = job.get("name", str(job_id))
+            job_status = job.get("status", "")
 
-            await _download_job_artifacts(db, client, project_id, job_id, run_id)
+            # Download artifact ZIP if the job has one
+            if job.get("artifacts_file") or job.get("artifacts"):
+                await _download_job_artifacts(db, client, project_id, job_id, run_id)
+
+            # Download job trace (console log) for completed jobs
+            if job_status not in ("created", "manual"):
+                await _download_job_trace(db, client, project_id, job_id, job_name, run_id)
 
     await _mark_artifacts_scraped(db, run_id)
+    return None
 
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07|\[0K")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
 
 _MIME_MAP = {
     ".json": "application/json",
@@ -242,6 +241,63 @@ async def _download_job_artifacts(
             "Artifact response for job %s is not a valid ZIP file",
             job_id,
         )
+
+
+async def _download_job_trace(
+    db,
+    client: httpx.AsyncClient,
+    project_id: str,
+    job_id: int,
+    job_name: str,
+    run_id: int,
+) -> None:
+    """Download the job trace (console log) and store it."""
+    file_path = f"{job_name}/job-trace.log"
+
+    # Skip if already stored
+    cursor = await db.execute(
+        "SELECT 1 FROM job_artifacts WHERE pipeline_run_id = ? AND source = 'job_trace' AND source_ref = ?",
+        (run_id, str(job_id)),
+    )
+    if await cursor.fetchone():
+        return
+
+    try:
+        resp = await client.get(f"/projects/{project_id}/jobs/{job_id}/trace")
+    except httpx.HTTPError as exc:
+        logger.error("HTTP error downloading trace for job %s: %s", job_id, exc)
+        return
+
+    if resp.status_code == 404:
+        logger.debug("No trace found for job %s (404)", job_id)
+        return
+
+    if resp.status_code != 200:
+        logger.warning("Failed to download trace for job %s: HTTP %d", job_id, resp.status_code)
+        return
+
+    raw_text = resp.text
+    if len(raw_text) > MAX_FILE_SIZE:
+        logger.debug("Skipping trace for job %s (%d bytes, exceeds limit)", job_id, len(raw_text))
+        return
+
+    cleaned = _strip_ansi(raw_text)
+
+    await db.execute(
+        """
+        INSERT INTO job_artifacts
+            (pipeline_run_id, source, source_ref, file_path, file_size, mime_type, content)
+        VALUES (?, 'job_trace', ?, ?, ?, 'text/plain', ?)
+        """,
+        (run_id, str(job_id), file_path, len(cleaned), cleaned),
+    )
+    await db.commit()
+
+    # Parse structured events from the trace
+    from backend.collector.parsers.trace_parser import parse_job_trace
+    await parse_job_trace(db, run_id, cleaned)
+
+    logger.info("Stored job trace for run %s (job %s, %d bytes)", run_id, job_id, len(cleaned))
 
 
 async def _mark_artifacts_scraped(db, run_id: int) -> None:
