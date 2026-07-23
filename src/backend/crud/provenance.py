@@ -108,16 +108,25 @@ async def get_container_inventory(db: aiosqlite.Connection) -> list[dict]:
     """Cross-pipeline container inventory: all images with which pipelines use them."""
     cursor = await db.execute(
         """
-        SELECT rc.image_ref, rc.image_digest, p.slug
-        FROM run_containers rc
-        JOIN pipeline_runs pr ON rc.pipeline_run_id = pr.id
-        JOIN pipelines p ON pr.pipeline_id = p.id
-        ORDER BY rc.image_ref
+        SELECT image_ref, image_digest, slug FROM (
+            SELECT rc.image_ref, rc.image_digest, p.slug
+            FROM run_containers rc
+            JOIN pipeline_runs pr ON rc.pipeline_run_id = pr.id
+            JOIN pipelines p ON pr.pipeline_id = p.id
+            UNION ALL
+            SELECT tm_img.value AS image_ref, tm_dig.value AS image_digest, p.slug
+            FROM trace_metadata tm_img
+            JOIN pipeline_runs pr ON tm_img.pipeline_run_id = pr.id
+            JOIN pipelines p ON pr.pipeline_id = p.id
+            LEFT JOIN trace_metadata tm_dig
+                ON tm_dig.pipeline_run_id = tm_img.pipeline_run_id AND tm_dig.key = 'container_digest'
+            WHERE tm_img.key = 'container_image'
+        )
+        ORDER BY image_ref
         """
     )
     rows = await cursor.fetchall()
 
-    # Group by image_ref
     inventory: dict[str, dict] = {}
     for row in rows:
         key = row["image_ref"]
@@ -131,7 +140,6 @@ async def get_container_inventory(db: aiosqlite.Connection) -> list[dict]:
             inventory[key]["digests"].add(row["image_digest"])
         inventory[key]["pipelines"].add(row["slug"])
 
-    # Convert sets to sorted lists
     result = []
     for item in inventory.values():
         result.append({

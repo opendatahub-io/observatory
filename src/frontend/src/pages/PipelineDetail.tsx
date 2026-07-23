@@ -481,32 +481,32 @@ function PipelineDetail() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {pipeline.repo_url && (
             <div>
-              <span className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-0.5">Repository</span>
-              <span className="text-sm text-gray-900 dark:text-gray-100">
+              <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Repository</div>
+              <div className="text-sm text-gray-900 dark:text-gray-100 break-all">
                 <a href={pipeline.repo_url} target="_blank" rel="noopener noreferrer">
                   {pipeline.repo_url}
                 </a>
-              </span>
+              </div>
             </div>
           )}
           {pipeline.owner && (
             <div>
-              <span className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-0.5">Owner</span>
-              <span className="text-sm text-gray-900 dark:text-gray-100">{pipeline.owner}</span>
+              <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Owner</div>
+              <div className="text-sm text-gray-900 dark:text-gray-100">{pipeline.owner}</div>
             </div>
           )}
           <div>
-            <span className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-0.5">Schedule</span>
-            <span className="text-sm text-gray-900 dark:text-gray-100">
+            <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Schedule</div>
+            <div className="text-sm text-gray-900 dark:text-gray-100">
               {pipeline.cron ? humanCron(pipeline.cron) : "On demand"}
-            </span>
+            </div>
           </div>
           {pipeline.timeout_minutes != null && pipeline.timeout_minutes > 0 && (
             <div>
-              <span className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-0.5">Timeout</span>
-              <span className="text-sm text-gray-900 dark:text-gray-100">
+              <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Timeout</div>
+              <div className="text-sm text-gray-900 dark:text-gray-100">
                 {formatTimeout(pipeline.timeout_minutes)}
-              </span>
+              </div>
             </div>
           )}
         </div>
