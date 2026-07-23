@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     github_token: str = ""
     api_key: str = ""
     credential_key: str = ""
-    collector_interval_minutes: int = 30
+    collector_interval_minutes: int = 1440
     static_dir: Path = Path("src/frontend/dist")
     ssl_verify: bool = True
     host: str = "0.0.0.0"
