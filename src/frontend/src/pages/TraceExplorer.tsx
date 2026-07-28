@@ -201,6 +201,9 @@ function TraceExplorer() {
   const [spans, setSpans] = useState<Span[]>([]);
   const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null);
 
+  // Reparse state
+  const [reparsing, setReparsing] = useState(false);
+
   // Shared state
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -210,61 +213,66 @@ function TraceExplorer() {
   const hasLogs = logFiles.length > 0;
   const hasSpans = spans.length > 0;
 
-  /* ---- Initial data fetch ---- */
-  useEffect(() => {
+  /* ---- Fetch all trace data ---- */
+  const fetchAll = useCallback(async (pickTab = true) => {
     if (!runId) return;
-    let cancelled = false;
+    setLoading(true);
+    setError(null);
 
-    async function fetchAll() {
-      setLoading(true);
-      setError(null);
+    try {
+      const [sumRes, logsRes, spansRes] = await Promise.all([
+        fetch(`/api/traces/runs/${encodeURIComponent(runId)}/summary`),
+        fetch(`/api/traces/runs/${encodeURIComponent(runId)}/logs`),
+        fetch(`/api/telemetry/spans/${encodeURIComponent(runId)}`),
+      ]);
 
-      try {
-        const [sumRes, logsRes, spansRes] = await Promise.all([
-          fetch(`/api/traces/runs/${encodeURIComponent(runId!)}/summary`),
-          fetch(`/api/traces/runs/${encodeURIComponent(runId!)}/logs`),
-          fetch(`/api/telemetry/spans/${encodeURIComponent(runId!)}`),
-        ]);
+      let traceSummary: TraceSummary | null = null;
+      let logs: LogFile[] = [];
+      let otelSpans: Span[] = [];
 
-        if (cancelled) return;
+      if (sumRes.ok) traceSummary = await sumRes.json();
+      if (logsRes.ok) logs = await logsRes.json();
+      if (spansRes.ok) {
+        const data: SpansResponse = await spansRes.json();
+        otelSpans = data.spans ?? [];
+      }
 
-        let traceSummary: TraceSummary | null = null;
-        let logs: LogFile[] = [];
-        let otelSpans: Span[] = [];
+      setSummary(traceSummary);
+      setLogFiles(logs);
+      setSpans(otelSpans);
 
-        if (sumRes.ok) traceSummary = await sumRes.json();
-        if (logsRes.ok) logs = await logsRes.json();
-        if (spansRes.ok) {
-          const data: SpansResponse = await spansRes.json();
-          otelSpans = data.spans ?? [];
-        }
-
-        if (!cancelled) {
-          setSummary(traceSummary);
-          setLogFiles(logs);
-          setSpans(otelSpans);
-
-          if (traceSummary && traceSummary.event_counts.length > 0) {
-            setActiveTab("job-trace");
-          } else if (logs.length > 0) {
-            setActiveTab("console-logs");
-          } else if (otelSpans.length > 0) {
-            setActiveTab("otel-spans");
-          }
-
-          setLoading(false);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to fetch trace data");
-          setLoading(false);
+      if (pickTab) {
+        if (traceSummary && traceSummary.event_counts.length > 0) {
+          setActiveTab("job-trace");
+        } else if (logs.length > 0) {
+          setActiveTab("console-logs");
+        } else if (otelSpans.length > 0) {
+          setActiveTab("otel-spans");
         }
       }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch trace data");
+    } finally {
+      setLoading(false);
     }
-
-    void fetchAll();
-    return () => { cancelled = true; };
   }, [runId]);
+
+  useEffect(() => { void fetchAll(); }, [fetchAll]);
+
+  /* ---- Reparse handler ---- */
+  const handleReparse = useCallback(async () => {
+    if (!runId) return;
+    setReparsing(true);
+    try {
+      const res = await fetch(`/api/admin/reparse-traces?run_id=${encodeURIComponent(runId)}`, { method: "POST" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await fetchAll(false);
+    } catch {
+      setError("Reparse failed");
+    } finally {
+      setReparsing(false);
+    }
+  }, [runId, fetchAll]);
 
   /* ---- Fetch events when page/filter changes ---- */
   const fetchEvents = useCallback(async () => {
@@ -460,6 +468,19 @@ function TraceExplorer() {
             </div>
           ) : (
             <>
+              {/* Reparse button */}
+              {hasLogs && (
+                <div className="flex justify-end mb-4">
+                  <button
+                    onClick={handleReparse}
+                    disabled={reparsing}
+                    className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50 transition-colors"
+                  >
+                    {reparsing ? "Reparsing..." : "Reparse Traces"}
+                  </button>
+                </div>
+              )}
+
               {/* Metadata card */}
               {summary && Object.keys(summary.metadata).length > 0 && (
                 <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 mb-6">

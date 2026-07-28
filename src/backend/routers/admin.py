@@ -142,3 +142,70 @@ async def backfill_traces(
 
     log.info("Backfill-traces: reset %d run(s)", len(run_ids))
     return {"reset": len(run_ids)}
+
+
+@router.post("/reparse-traces")
+async def reparse_traces(
+    db: aiosqlite.Connection = Depends(get_db),
+    run_id: Optional[int] = Query(default=None, description="Single run ID to reparse"),
+    pipeline: Optional[str] = Query(default=None, description="Pipeline slug filter"),
+    limit: int = Query(default=500, ge=1, le=5000, description="Max runs to reparse"),
+):
+    """Re-parse stored job trace logs with the current parser. Deletes old parsed data first."""
+    from backend.collector.parsers.trace_parser import parse_job_trace
+
+    if run_id is not None:
+        run_ids = [run_id]
+    else:
+        where = ["ja.source = 'job_trace'"]
+        params: list = []
+
+        if pipeline:
+            where.append("p.slug = ?")
+            params.append(pipeline)
+
+        where_clause = " AND ".join(where)
+        params.append(limit)
+
+        cursor = await db.execute(
+            f"""
+            SELECT DISTINCT ja.pipeline_run_id
+            FROM job_artifacts ja
+            JOIN pipeline_runs pr ON ja.pipeline_run_id = pr.id
+            JOIN pipelines p ON pr.pipeline_id = p.id
+            WHERE {where_clause}
+            ORDER BY ja.pipeline_run_id DESC
+            LIMIT ?
+            """,
+            params,
+        )
+        run_ids = [row[0] for row in await cursor.fetchall()]
+
+    reparsed = 0
+    errors = 0
+    for rid in run_ids:
+        art_cursor = await db.execute(
+            "SELECT content FROM job_artifacts WHERE source = 'job_trace' AND pipeline_run_id = ?",
+            (rid,),
+        )
+        artifacts = await art_cursor.fetchall()
+
+        await db.execute("DELETE FROM trace_events WHERE pipeline_run_id = ?", (rid,))
+        await db.execute("DELETE FROM trace_packages WHERE pipeline_run_id = ?", (rid,))
+        await db.execute("DELETE FROM trace_metadata WHERE pipeline_run_id = ?", (rid,))
+
+        for art in artifacts:
+            try:
+                raw = art["content"]
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8", errors="replace")
+                await parse_job_trace(db, rid, raw)
+            except Exception:
+                log.exception("Reparse failed for run %d", rid)
+                errors += 1
+
+        reparsed += 1
+
+    await db.commit()
+    log.info("Reparse-traces: reparsed %d run(s), %d error(s)", reparsed, errors)
+    return {"reparsed": reparsed, "errors": errors}

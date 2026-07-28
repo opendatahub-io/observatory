@@ -7,7 +7,7 @@ import aiosqlite
 _SECTION_START_RE = re.compile(r"section_start:\d+:(\S+)")
 _SECTION_END_RE = re.compile(r"section_end:\d+:(\S+)")
 
-_COMMAND_RE = re.compile(r"(?:^|\s)\$\s+(.+)$", re.MULTILINE)
+_COMMAND_RE = re.compile(r"(?:^|\s)\$\s+([a-zA-Z_/\.\[{(].+)$", re.MULTILINE)
 
 _TOOL_CALL_RE = re.compile(
     r"\U0001f527\s+(\w+)\s+\$\s+(.+)$", re.MULTILINE
