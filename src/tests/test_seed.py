@@ -14,11 +14,14 @@ async def test_seed_populates_pipelines(tmp_db):
     pipelines = await load_seed_data()
     count = await seed_database(db, pipelines)
 
-    assert count == 11
+    # Assert against the seed file's own pipeline count so this doesn't drift
+    # every time a pipeline is added to data/seed.json.
+    expected = len(pipelines)
+    assert count == expected
 
     cursor = await db.execute("SELECT COUNT(*) FROM pipelines")
     row = await cursor.fetchone()
-    assert row[0] == 11
+    assert row[0] == expected
 
 
 @pytest.mark.asyncio
@@ -127,6 +130,6 @@ async def test_seed_idempotent(tmp_db):
     cursor = await db.execute("SELECT COUNT(*) FROM pipeline_jira_contracts")
     jira_count2 = (await cursor.fetchone())[0]
 
-    assert count1 == count2 == 11
+    assert count1 == count2 == len(pipelines)
     assert skills_count1 == skills_count2
     assert jira_count1 == jira_count2

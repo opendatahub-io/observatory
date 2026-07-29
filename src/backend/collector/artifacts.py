@@ -1,6 +1,7 @@
 """Download and dispatch CI job artifacts from GitLab."""
 
 import io
+import json
 import logging
 import re
 import zipfile
@@ -134,6 +135,19 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07|\[0K")
 def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
+
+def _safe_json_dict(data: bytes) -> dict | None:
+    """Decode artifact bytes as a JSON object, or return None.
+
+    The artifact parsers all expect a ``dict``; anything that is not valid
+    JSON (e.g. an MLflow ``meta.yaml`` or a metric file) is skipped.
+    """
+    try:
+        parsed = json.loads(data)
+    except (ValueError, TypeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
 _MIME_MAP = {
     ".json": "application/json",
     ".yml": "text/yaml",
@@ -218,16 +232,25 @@ async def _download_job_artifacts(
                 stored += 1
 
                 if name.endswith("otel-summary.json"):
-                    from backend.collector.parsers.otel_summary import parse_otel_summary
-                    await parse_otel_summary(db, run_id, data)
+                    logger.info("Found otel-summary.json in job %s artifacts", job_id)
+                    parsed = _safe_json_dict(data)
+                    if parsed is not None:
+                        from backend.collector.parsers.otel_summary import parse_otel_summary
+                        await parse_otel_summary(db, run_id, parsed)
 
                 if name.endswith("run-manifest.json"):
-                    from backend.collector.parsers.manifest import parse_run_manifest
-                    await parse_run_manifest(db, run_id, data)
+                    logger.info("Found run-manifest.json in job %s artifacts", job_id)
+                    parsed = _safe_json_dict(data)
+                    if parsed is not None:
+                        from backend.collector.parsers.manifest import parse_run_manifest
+                        await parse_run_manifest(db, run_id, parsed)
 
                 if "mlflow/" in name:
-                    from backend.collector.parsers.mlflow_parser import parse_mlflow_artifact
-                    await parse_mlflow_artifact(db, run_id, run_id, data)
+                    logger.info("Found mlflow artifact %s in job %s", name, job_id)
+                    parsed = _safe_json_dict(data)
+                    if parsed is not None:
+                        from backend.collector.parsers.mlflow_parser import parse_mlflow_artifact
+                        await parse_mlflow_artifact(db, run_id, run_id, parsed)
 
             if stored:
                 await db.commit()

@@ -383,6 +383,31 @@ function IntelligenceSettings() {
             )}
           </div>
 
+          {/* Jira credential hint */}
+          {formData.source_type === "jira" && (
+            <div className="text-xs rounded-lg p-3 bg-amber-50 text-amber-800 dark:bg-amber-900/20 dark:text-amber-300 border border-amber-200 dark:border-amber-900/40">
+              <p className="font-semibold mb-1">Jira credentials come from the environment, not this form.</p>
+              <p>
+                The API token is read from{" "}
+                <code className="font-mono">JIRA_API_TOKEN</code> in{" "}
+                <code className="font-mono">.env</code> (plus{" "}
+                <code className="font-mono">JIRA_EMAIL</code> for Jira Cloud), so no
+                secret is stored in Observatory. If{" "}
+                <code className="font-mono">JIRA_URL</code> is set in{" "}
+                <code className="font-mono">.env</code>, adding a source here is
+                optional — set the Endpoint only to override that URL. Restart the
+                backend after changing <code className="font-mono">.env</code>.
+              </p>
+              <p className="mt-1">
+                Optional <code className="font-mono">config</code> keys:{" "}
+                <code className="font-mono">
+                  {'{"auth_type": "basic|bearer"}'}
+                </code>{" "}
+                (defaults to basic for <code className="font-mono">*.atlassian.net</code>).
+              </p>
+            </div>
+          )}
+
           {/* Actions */}
           <div className="flex items-center gap-2 pt-1">
             <button

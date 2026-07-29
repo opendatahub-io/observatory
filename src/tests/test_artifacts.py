@@ -116,9 +116,11 @@ async def test_artifact_zip_with_otel_summary(tmp_db, caplog):
         ("otel-summary.json", '{"tokens": 1000}'),
     )
     artifact_resp = _make_mock_response(200, content=zip_bytes)
+    # Job has no "status" key, so a trace fetch is also attempted (404 = none).
+    trace_resp = _make_mock_response(404)
 
     mock_client = AsyncMock()
-    mock_client.get = AsyncMock(side_effect=[jobs_resp, artifact_resp])
+    mock_client.get = AsyncMock(side_effect=[jobs_resp, artifact_resp, trace_resp])
 
     with patch("backend.collector.artifacts.backend.config") as mock_config:
         mock_config.settings.gitlab_token = "fake-token"
@@ -155,9 +157,10 @@ async def test_artifact_zip_with_run_manifest(tmp_db, caplog):
         ("run-manifest.json", '{"commands": []}'),
     )
     artifact_resp = _make_mock_response(200, content=zip_bytes)
+    trace_resp = _make_mock_response(404)
 
     mock_client = AsyncMock()
-    mock_client.get = AsyncMock(side_effect=[jobs_resp, artifact_resp])
+    mock_client.get = AsyncMock(side_effect=[jobs_resp, artifact_resp, trace_resp])
 
     with patch("backend.collector.artifacts.backend.config") as mock_config:
         mock_config.settings.gitlab_token = "fake-token"
@@ -187,9 +190,10 @@ async def test_artifact_zip_with_mlflow_content(tmp_db, caplog):
         ("mlflow/metrics/accuracy", "1.0 1234567890 0"),
     )
     artifact_resp = _make_mock_response(200, content=zip_bytes)
+    trace_resp = _make_mock_response(404)
 
     mock_client = AsyncMock()
-    mock_client.get = AsyncMock(side_effect=[jobs_resp, artifact_resp])
+    mock_client.get = AsyncMock(side_effect=[jobs_resp, artifact_resp, trace_resp])
 
     with patch("backend.collector.artifacts.backend.config") as mock_config:
         mock_config.settings.gitlab_token = "fake-token"
@@ -214,9 +218,10 @@ async def test_missing_artifacts_404(tmp_db, caplog):
         {"id": 200, "artifacts_file": {"filename": "artifacts.zip", "size": 100}},
     ])
     not_found_resp = _make_mock_response(404)
+    trace_resp = _make_mock_response(404)
 
     mock_client = AsyncMock()
-    mock_client.get = AsyncMock(side_effect=[jobs_resp, not_found_resp])
+    mock_client.get = AsyncMock(side_effect=[jobs_resp, not_found_resp, trace_resp])
 
     with patch("backend.collector.artifacts.backend.config") as mock_config:
         mock_config.settings.gitlab_token = "fake-token"
@@ -295,7 +300,7 @@ async def test_non_gitlab_pipeline_skipped(tmp_db, caplog):
 
 @pytest.mark.asyncio
 async def test_jobs_endpoint_error(tmp_db, caplog):
-    """If listing jobs fails, mark as scraped and log warning."""
+    """If listing jobs fails, return an error and leave the run un-scraped for retry."""
     db = await get_db()
     pipeline, run = await _seed_pipeline_and_run(db)
 
@@ -312,17 +317,19 @@ async def test_jobs_endpoint_error(tmp_db, caplog):
             MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
 
             with caplog.at_level(logging.WARNING):
-                await download_and_process_artifacts(db, pipeline, run)
+                result = await download_and_process_artifacts(db, pipeline, run)
 
     assert "Failed to list jobs" in caplog.text
+    # An error is returned so the caller can retry.
+    assert result is not None and "error" in result
 
-    # Should still mark as scraped to avoid retrying forever
+    # Should NOT be marked as scraped — the run can be retried later.
     cursor = await db.execute(
         "SELECT artifacts_scraped FROM pipeline_runs WHERE id = ?",
         (run["id"],),
     )
     row = await cursor.fetchone()
-    assert dict(row)["artifacts_scraped"] == 1
+    assert dict(row)["artifacts_scraped"] == 0
 
 
 @pytest.mark.asyncio
@@ -335,9 +342,11 @@ async def test_job_without_artifacts_skipped(tmp_db, caplog):
     jobs_resp = _make_mock_response(200, json_data=[
         {"id": 300, "name": "lint"},
     ])
+    # No artifacts, but the job trace is still fetched (404 = none available).
+    trace_resp = _make_mock_response(404)
 
     mock_client = AsyncMock()
-    mock_client.get = AsyncMock(side_effect=[jobs_resp])
+    mock_client.get = AsyncMock(side_effect=[jobs_resp, trace_resp])
 
     with patch("backend.collector.artifacts.backend.config") as mock_config:
         mock_config.settings.gitlab_token = "fake-token"
@@ -368,9 +377,10 @@ async def test_bad_zip_handled(tmp_db, caplog):
         {"id": 400, "artifacts_file": {"filename": "artifacts.zip", "size": 50}},
     ])
     bad_resp = _make_mock_response(200, content=b"this is not a zip file")
+    trace_resp = _make_mock_response(404)
 
     mock_client = AsyncMock()
-    mock_client.get = AsyncMock(side_effect=[jobs_resp, bad_resp])
+    mock_client.get = AsyncMock(side_effect=[jobs_resp, bad_resp, trace_resp])
 
     with patch("backend.collector.artifacts.backend.config") as mock_config:
         mock_config.settings.gitlab_token = "fake-token"

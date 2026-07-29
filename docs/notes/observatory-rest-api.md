@@ -332,6 +332,58 @@ Summary of a run's trace: event counts by type, packages installed, and metadata
 
 Packages extracted from the trace (installed during the run via dnf/microdnf or pip).
 
+### GET /api/traces/search
+
+Full-text search over parsed trace events **and** raw `job_trace` console logs.
+Resolves a token that only appears inside job output — a Jira issue key, an error
+string, a file path, a command — to the pipeline runs that reference it. This is
+the only content-search path over job output; nothing else (including
+`query_claims`) will find a Jira key that has no linked claims.
+
+Query parameters:
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `q` | string | — | **Required.** Term to search for in trace/artifact content |
+| `type` | string | — | Restrict to a trace event type (`command`, `tool_call`, `error`, …). Skips raw-log matches. |
+| `pipeline` | string | — | Restrict to a pipeline slug |
+| `limit` | int | 50 | Max matches per source (1-200) |
+
+Response:
+```json
+{
+  "query": "RHAISTRAT-2364",
+  "runs": [
+    {
+      "run_id": 3972,
+      "pipeline_slug": "strat-pipeline",
+      "external_id": "2704164315",
+      "job": "batch-jql",
+      "status": "success",
+      "started_at": "2026-07-24T19:00:56.690Z",
+      "web_url": "https://gitlab.com/.../-/pipelines/2704164315",
+      "trace_event_matches": 15,
+      "artifact_matches": 1
+    }
+  ],
+  "trace_matches": [
+    {"kind": "trace_event", "run_id": 3972, "pipeline_slug": "strat-pipeline", "event_type": "tool_call", "line_number": 155, "snippet": "Bash: ... fetch_issue.py RHAISTRAT-2364 ..."}
+  ],
+  "artifact_matches": [
+    {"kind": "artifact", "artifact_id": 23984, "run_id": 3972, "pipeline_slug": "strat-pipeline", "file_path": "batch-jql/job-trace.log", "snippet": "...RHAISTRAT-2364..."}
+  ],
+  "run_count": 2,
+  "match_count": 16,
+  "truncated": false
+}
+```
+
+**Recipe — find runs related to a Jira key:**
+```bash
+curl -s 'http://localhost:8000/api/traces/search?q=RHAISTRAT-2364' | jq '.runs'
+# then drill into a run:
+curl -s 'http://localhost:8000/api/traces/runs/3972/summary' | jq '.'
+```
+
 ### GET /api/traces/summary
 
 Aggregate trace summary across all pipelines.
@@ -343,6 +395,66 @@ Tool usage summary across all traces (which tools are called, how often).
 ### GET /api/traces/packages
 
 Package inventory across all traces.
+
+---
+
+## Issues (Jira Key Index)
+
+Jira issue keys (e.g. `RHAISTRAT-2364`) appear only inside job output — parsed
+trace events and raw `job_trace` console logs — never in a structured column.
+The `issue_references` index extracts them so they can be listed and searched.
+Only keys whose project prefix is allow-listed are indexed (curated defaults ∪
+prefixes of validated claim keys ∪ declared pipeline Jira contracts), which
+excludes code-ish false positives like `FILTER-1` or placeholder `RFE-001`.
+
+The index is kept current incrementally as job traces are parsed; use the
+refresh endpoint for a full rebuild after a bulk backfill.
+
+### GET /api/issues
+
+Searchable list of Jira keys with aggregated run/pipeline stats.
+
+Query params:
+
+| Param    | Type   | Default | Notes                                   |
+|----------|--------|---------|-----------------------------------------|
+| `search` | string | —       | Filter by Jira key substring (escaped)  |
+| `limit`  | int    | 100     | 1–500                                    |
+| `offset` | int    | 0       | Pagination offset                        |
+
+```json
+{
+  "issues": [
+    {
+      "jira_key": "RHAISTRAT-2364",
+      "run_count": 2,
+      "pipeline_count": 1,
+      "match_count": 17,
+      "first_seen": "2026-07-20T10:00:00Z",
+      "last_seen": "2026-07-28T16:00:00Z",
+      "pipelines": ["strat-pipeline"]
+    }
+  ],
+  "total": 5032,
+  "limit": 100,
+  "offset": 0
+}
+```
+
+### GET /api/issues/{jira_key}
+
+Run history and trace/artifact evidence for a single key. Returns the same
+shape as `/api/traces/search` (per-run rollup plus sample match snippets).
+
+```bash
+curl -s 'http://localhost:8000/api/issues/RHAISTRAT-2364' | jq '.runs'
+```
+
+### POST /api/issues/refresh
+
+Rebuild the entire issue index from all trace/artifact content (operator
+action; O(all trace rows), takes tens of seconds on a large DB). Returns
+`{keys, rows, runs, allowed_prefixes}`.
 
 ---
 

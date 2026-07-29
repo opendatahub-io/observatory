@@ -167,7 +167,7 @@ async def test_revoke_api_key(clean_client):
 
     # Verify the key works for OTLP
     resp = await clean_client.post(
-        "/v1/traces",
+        "/otel/v1/traces",
         json=_otlp_payload(),
         headers={"X-API-Key": full_key},
     )
@@ -179,7 +179,7 @@ async def test_revoke_api_key(clean_client):
 
     # Now the key should be rejected
     resp = await clean_client.post(
-        "/v1/traces",
+        "/otel/v1/traces",
         json=_otlp_payload(),
         headers={"X-API-Key": full_key},
     )
@@ -200,7 +200,7 @@ async def test_scoped_key_allows_matching_pipeline(clean_client):
     full_key = create_resp.json()["key"]
 
     resp = await clean_client.post(
-        "/v1/traces",
+        "/otel/v1/traces",
         json=_otlp_payload("rfe-review"),
         headers={"X-API-Key": full_key},
     )
@@ -221,7 +221,7 @@ async def test_scoped_key_rejects_wrong_pipeline(clean_client):
     full_key = create_resp.json()["key"]
 
     resp = await clean_client.post(
-        "/v1/traces",
+        "/otel/v1/traces",
         json=_otlp_payload("autofix-bugfix"),
         headers={"X-API-Key": full_key},
     )
@@ -243,7 +243,7 @@ async def test_wildcard_key_allows_any_pipeline(clean_client):
 
     for svc in ["rfe-review", "autofix-bugfix", "random-pipeline"]:
         resp = await clean_client.post(
-            "/v1/traces",
+            "/otel/v1/traces",
             json=_otlp_payload(svc),
             headers={"X-API-Key": full_key},
         )
@@ -265,7 +265,7 @@ async def test_expired_key_returns_401(clean_client):
     full_key = create_resp.json()["key"]
 
     resp = await clean_client.post(
-        "/v1/traces",
+        "/otel/v1/traces",
         json=_otlp_payload(),
         headers={"X-API-Key": full_key},
     )
@@ -280,7 +280,7 @@ async def test_expired_key_returns_401(clean_client):
 async def test_env_var_fallback_still_works(env_key_client):
     """OBSERVATORY_API_KEY env var works when no DB key matches."""
     resp = await env_key_client.post(
-        "/v1/traces",
+        "/otel/v1/traces",
         json=_otlp_payload(),
         headers={"X-API-Key": "env-secret-key"},
     )
@@ -295,7 +295,7 @@ async def test_env_var_fallback_still_works(env_key_client):
 async def test_no_auth_when_no_keys_configured(clean_client):
     """No DB keys + no env var = auth disabled."""
     resp = await clean_client.post(
-        "/v1/traces",
+        "/otel/v1/traces",
         json=_otlp_payload(),
     )
     assert resp.status_code == 200
@@ -323,7 +323,7 @@ async def test_last_used_at_updated(clean_client):
 
     # Use the key
     await clean_client.post(
-        "/v1/traces",
+        "/otel/v1/traces",
         json=_otlp_payload(),
         headers={"X-API-Key": full_key},
     )

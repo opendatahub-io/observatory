@@ -88,7 +88,7 @@ async def client_with_api_key(tmp_path):
 
 @pytest.mark.asyncio
 async def test_otlp_rejects_without_key(client_with_api_key):
-    resp = await client_with_api_key.post("/v1/traces", json=SAMPLE_OTLP_PAYLOAD)
+    resp = await client_with_api_key.post("/otel/v1/traces", json=SAMPLE_OTLP_PAYLOAD)
     assert resp.status_code == 401
 
 
@@ -115,7 +115,7 @@ async def test_sbom_push_rejects_without_key(client_with_api_key):
 @pytest.mark.asyncio
 async def test_otlp_accepts_with_correct_key(client_with_api_key):
     resp = await client_with_api_key.post(
-        "/v1/traces",
+        "/otel/v1/traces",
         json=SAMPLE_OTLP_PAYLOAD,
         headers={"X-API-Key": "test-secret-key-123"},
     )
@@ -150,7 +150,7 @@ async def test_sbom_push_accepts_with_correct_key(client_with_api_key):
 @pytest.mark.asyncio
 async def test_otlp_rejects_wrong_key(client_with_api_key):
     resp = await client_with_api_key.post(
-        "/v1/traces",
+        "/otel/v1/traces",
         json=SAMPLE_OTLP_PAYLOAD,
         headers={"X-API-Key": "wrong-key"},
     )
@@ -165,7 +165,7 @@ async def test_otlp_rejects_wrong_key(client_with_api_key):
 @pytest.mark.asyncio
 async def test_otlp_works_without_auth_when_no_key_configured(client):
     """When OBSERVATORY_API_KEY is empty, push endpoints should work without auth."""
-    resp = await client.post("/v1/traces", json=SAMPLE_OTLP_PAYLOAD)
+    resp = await client.post("/otel/v1/traces", json=SAMPLE_OTLP_PAYLOAD)
     assert resp.status_code == 200
 
 

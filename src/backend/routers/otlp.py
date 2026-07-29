@@ -17,6 +17,7 @@ from typing import Any
 import aiosqlite
 from fastapi import APIRouter, Depends, Request  # noqa: F401
 
+from backend.auth import require_api_key_scoped
 from backend.database import get_db
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,26 @@ def _extract_resource_attr(resource: dict | None, key: str) -> str | None:
                 or value.get("doubleValue")
             )
     return None
+
+
+async def _authorize_ingest(
+    request: Request, db: aiosqlite.Connection, resource_containers: list
+) -> None:
+    """Enforce API-key auth for an OTLP ingest request.
+
+    The key is scoped to the first ``service.name`` found in the payload (which
+    is matched against a pipeline slug). ``require_api_key_scoped`` is permissive
+    when no API keys are configured, so open deployments keep working.
+    """
+    api_key = request.headers.get("x-api-key")
+    first_service_name = None
+    for rc in resource_containers:
+        if isinstance(rc, dict):
+            sn = _extract_resource_attr(rc.get("resource", {}), "service.name")
+            if sn:
+                first_service_name = sn
+                break
+    await require_api_key_scoped(first_service_name, api_key, db)
 
 
 def _attr_value(value: dict) -> Any:
@@ -263,6 +284,8 @@ async def receive_traces(request: Request, db: aiosqlite.Connection = Depends(ge
     if not isinstance(resource_spans, list):
         return {}
 
+    await _authorize_ingest(request, db, resource_spans)
+
     for rs in resource_spans:
         if not isinstance(rs, dict):
             continue
@@ -366,6 +389,8 @@ async def receive_logs(request: Request, db: aiosqlite.Connection = Depends(get_
     if not isinstance(resource_logs, list):
         return {}
 
+    await _authorize_ingest(request, db, resource_logs)
+
     for rl in resource_logs:
         if not isinstance(rl, dict):
             continue
@@ -459,6 +484,8 @@ async def receive_metrics(request: Request, db: aiosqlite.Connection = Depends(g
     resource_metrics = body.get("resourceMetrics", [])
     if not isinstance(resource_metrics, list):
         return {}
+
+    await _authorize_ingest(request, db, resource_metrics)
 
     for rm in resource_metrics:
         if not isinstance(rm, dict):

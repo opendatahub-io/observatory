@@ -15,7 +15,11 @@ src/frontend/dist/
 data/observatory.db
 data/observatory.db-shm
 data/observatory.db-wal
+observatory.db
+observatory.db-shm
+observatory.db-wal
 var/
+checkouts/
 
 # Secrets
 .env

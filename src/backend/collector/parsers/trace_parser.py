@@ -159,3 +159,12 @@ async def parse_job_trace(db: aiosqlite.Connection, run_id: int, log_text: str) 
 
     if events or packages or metadata:
         await db.commit()
+
+    # Keep the Jira-issue index current for this run (best-effort — never let an
+    # indexing hiccup break trace ingestion).
+    try:
+        from backend.crud.issues import index_run
+
+        await index_run(db, run_id)
+    except Exception:  # noqa: BLE001
+        pass

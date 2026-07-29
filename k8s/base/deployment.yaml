@@ -30,6 +30,8 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: checkouts
+              mountPath: /checkouts
           resources:
             requests:
               cpu: 100m
@@ -57,3 +59,6 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: observatory-data
+        - name: checkouts
+          persistentVolumeClaim:
+            claimName: observatory-checkouts

@@ -2,6 +2,7 @@ import json
 
 import aiosqlite
 
+from backend.database import upsert_repository, link_repository
 from backend.schemas.pipelines import PipelineCreate, PipelineUpdate
 
 
@@ -58,7 +59,13 @@ async def create_pipeline(db: aiosqlite.Connection, data: PipelineCreate) -> dic
         ),
     )
     await db.commit()
-    return await get_pipeline(db, data.slug)
+    pipeline = await get_pipeline(db, data.slug)
+    if pipeline and data.repo_url:
+        repo_id = await upsert_repository(db, data.repo_url, "pipeline_source")
+        if repo_id is not None:
+            await link_repository(db, pipeline["id"], repo_id, "source")
+            await db.commit()
+    return pipeline
 
 
 async def update_pipeline(
@@ -94,7 +101,13 @@ async def update_pipeline(
 
     # If slug was updated, use the new slug to fetch
     new_slug = updates.get("slug", slug)
-    return await get_pipeline(db, new_slug)
+    pipeline = await get_pipeline(db, new_slug)
+    if pipeline and updates.get("repo_url"):
+        repo_id = await upsert_repository(db, updates["repo_url"], "pipeline_source")
+        if repo_id is not None:
+            await link_repository(db, pipeline["id"], repo_id, "source")
+            await db.commit()
+    return pipeline
 
 
 async def delete_pipeline(db: aiosqlite.Connection, slug: str) -> bool:

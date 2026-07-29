@@ -14,6 +14,7 @@ import backend.config
 import backend.database
 from backend.database import connect, disconnect, get_db, init_schema
 from backend.collector.scheduler import collector_loop
+from backend.repo_sync_scheduler import repo_sync_loop
 from backend.logging_handler import log_handler
 from backend.routers import health, pipeline_metadata, pipelines, runs, telemetry
 from backend.routers import admin as admin_router
@@ -37,6 +38,8 @@ from backend.routers.chat import router as chat_router
 from backend.routers.data_sources import router as data_sources_router
 from backend.routers.claim_assurance import router as claim_assurance_router
 from backend.routers.claim_consolidation import router as claim_consolidation_router
+from backend.routers.repositories import router as repositories_router
+from backend.routers.issues import router as issues_router
 
 # Attach the ring-buffer log handler to collector and credential loggers
 _collector_logger = logging.getLogger("backend.collector")
@@ -57,12 +60,14 @@ async def lifespan(app: FastAPI):
         await init_schema(db)
 
     task = asyncio.create_task(collector_loop())
+    repo_sync_task = asyncio.create_task(repo_sync_loop())
     yield
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    for t in (task, repo_sync_task):
+        t.cancel()
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
 
     if backend.database._db is not None:
         await disconnect()
@@ -102,6 +107,8 @@ app.include_router(chat_router)
 app.include_router(data_sources_router)
 app.include_router(claim_assurance_router)
 app.include_router(claim_consolidation_router)
+app.include_router(repositories_router)
+app.include_router(issues_router)
 
 static_dir = Path(backend.config.settings.static_dir)
 if static_dir.is_dir():

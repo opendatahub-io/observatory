@@ -2,6 +2,8 @@ import json
 
 import aiosqlite
 
+from backend.database import upsert_repository, link_repository
+
 
 async def _resolve_pipeline_id(db: aiosqlite.Connection, slug: str) -> int | None:
     """Resolve a pipeline slug to its ID. Returns None if not found."""
@@ -66,6 +68,13 @@ async def create_skill(
     )
     await db.commit()
     rid = cursor.lastrowid
+    repo_id = await upsert_repository(db, data["repo_url"], "skill")
+    if repo_id is not None:
+        await link_repository(
+            db, pipeline_id, repo_id, "skill",
+            purpose=data.get("purpose"), branch=data.get("branch"),
+        )
+        await db.commit()
     cur2 = await db.execute("SELECT * FROM pipeline_skills WHERE id = ?", (rid,))
     return dict(await cur2.fetchone())
 
@@ -99,6 +108,12 @@ async def create_shared_lib(
     )
     await db.commit()
     rid = cursor.lastrowid
+    repo_id = await upsert_repository(db, data["repo_url"], "shared_lib")
+    if repo_id is not None:
+        await link_repository(
+            db, pipeline_id, repo_id, "shared_lib", purpose=data.get("purpose")
+        )
+        await db.commit()
     cur2 = await db.execute("SELECT * FROM pipeline_shared_libs WHERE id = ?", (rid,))
     return dict(await cur2.fetchone())
 

@@ -19,6 +19,9 @@ function getPageTitle(pathname: string): string {
   if (pathname === "/knowledge-base") return "Knowledge Base";
   if (pathname === "/intelligence-settings") return "Intelligence Settings";
   if (pathname === "/collector") return "Collector";
+  if (pathname === "/repositories") return "Repositories";
+  if (pathname === "/issues") return "Issues";
+  if (pathname.startsWith("/issues/")) return "Issue Detail";
   if (pathname === "/admin") return "Admin";
   if (pathname.endsWith("/diff")) return "Provenance Diff";
   if (pathname.startsWith("/pipelines/")) return "Pipeline Detail";

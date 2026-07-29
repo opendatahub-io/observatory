@@ -9,7 +9,7 @@ dev: ## Start backend + frontend via Honcho
 	$(VENV)/honcho start -f Procfile.dev
 
 backend: ## Start backend only (uvicorn with hot reload)
-	PYTHONPATH=src $(VENV)/uvicorn backend.app:app --reload --reload-dir src/backend --host 127.0.0.1 --port 8000
+	OBSERVATORY_CHECKOUT_ROOT=checkouts OBSERVATORY_CHAT_BROWSE_ROOTS=.context,artifacts,checkouts PYTHONPATH=src $(VENV)/uvicorn backend.app:app --reload --reload-dir src/backend --host 127.0.0.1 --port 8000
 
 frontend: ## Start frontend only (vite dev server)
 	npm run dev --prefix src/frontend

@@ -15,6 +15,8 @@ from backend.crud import claim_triage as claim_triage_crud
 from backend.crud import kb as kb_crud
 from backend.crud import pipelines as pipelines_crud
 from backend.crud import runs as runs_crud
+from backend.crud import traces as traces_crud
+from backend.crud import issues as issues_crud
 
 log = logging.getLogger(__name__)
 
@@ -170,6 +172,74 @@ TOOL_DEFINITIONS: list[dict] = [
         },
     },
     {
+        "name": "search_job_traces",
+        "description": (
+            "Full-text search across pipeline job output — both parsed trace "
+            "events and raw job console logs. This is how you find which runs "
+            "reference a token that only appears inside job output, such as a "
+            "Jira issue key (e.g. RHAISTRAT-2364), a file path, an error string, "
+            "or a command. Use this FIRST when asked to find job/run data related "
+            "to a Jira key or any free-text term. Returns a per-run rollup "
+            "(run_id, pipeline, status, web_url, match counts) plus sample "
+            "matches with snippets. Then call get_run_trace with a run_id to "
+            "drill into that run."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Term to search for in trace/artifact content (e.g. a Jira key)"},
+                "event_type": {"type": "string", "description": "Restrict to a trace event type (command, tool_call, error, section_start, section_end). Skips raw-log matches."},
+                "pipeline_slug": {"type": "string", "description": "Restrict to a single pipeline"},
+                "limit": {"type": "integer", "description": "Max matches per source (1-200)", "default": 50},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "list_issues",
+        "description": (
+            "List Jira issue keys referenced anywhere in job output, with "
+            "aggregated stats. Use this to ENUMERATE or BROWSE issues (e.g. "
+            "'which issues appear most', 'list RHAISTRAT issues', 'what issues "
+            "did the autofix pipeline touch') — as opposed to search_job_traces, "
+            "which resolves the runs for ONE already-known key. Returns distinct "
+            "keys with run_count, pipeline_count, match_count, first/last seen, "
+            "and the pipelines that reference each. The `search` arg filters by "
+            "key substring. Backed by an index of real Jira projects only (noise "
+            "tokens are excluded). To then see run history/evidence for a key, "
+            "call search_job_traces with that key."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "search": {"type": "string", "description": "Filter by Jira key substring (e.g. 'RHAISTRAT' or 'RHAISTRAT-2364')"},
+                "limit": {"type": "integer", "description": "Max issues to return (1-500)", "default": 100},
+                "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_run_trace",
+        "description": (
+            "Get the parsed trace for a specific pipeline run by its internal "
+            "run_id (as returned by search_job_traces or query_runs): a summary "
+            "of event counts, installed packages, and container/runner metadata, "
+            "plus trace events. Filter events by type (command, tool_call, error, "
+            "section_start, section_end)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "integer", "description": "Internal run_id (database id, not the GitLab pipeline number)"},
+                "event_type": {"type": "string", "description": "Filter events by type (e.g. error, tool_call, command)"},
+                "limit": {"type": "integer", "description": "Max events (1-200). Event content is truncated per-event; use event_type + offset to page through large runs.", "default": 60},
+                "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
+            },
+            "required": ["run_id"],
+        },
+    },
+    {
         "name": "kb_search",
         "description": "Full-text search across knowledge base articles.",
         "input_schema": {
@@ -219,11 +289,11 @@ TOOL_DEFINITIONS: list[dict] = [
     },
     {
         "name": "query_jira",
-        "description": "Query the configured Jira instance using JQL. Returns issue keys, summaries, statuses, and other fields. Use this to answer questions about Jira tickets, counts, and project contents.",
+        "description": "Query the live, authenticated Jira instance using JQL. Returns issue keys, summaries, statuses, types, priorities, and an approximate total. Use this to answer questions about Jira tickets, counts, and project contents. NOTE: the JQL must be bounded (include a project, key, filter, or date restriction) — a bare 'ORDER BY ...' is rejected by Jira Cloud.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "jql": {"type": "string", "description": "JQL query (e.g. 'project = RHAIRFE ORDER BY created DESC')"},
+                "jql": {"type": "string", "description": "Bounded JQL query (e.g. 'project = RHAIRFE ORDER BY created DESC', 'key = RHOAIENG-123', 'assignee = currentUser() AND status != Done')"},
                 "fields": {"type": "string", "description": "Comma-separated fields to return (default: key,summary,status,issuetype,priority,created)", "default": "key,summary,status,issuetype,priority,created"},
                 "max_results": {"type": "integer", "description": "Max issues to return (max 50)", "default": 20},
             },
@@ -344,6 +414,116 @@ TOOL_DEFINITIONS: list[dict] = [
                 "max_results": {"type": "integer", "description": "Max results to return", "default": 20},
             },
             "required": ["action"],
+        },
+    },
+    {
+        "name": "repo_search",
+        "description": (
+            "Search the repository registry for git repos Observatory tracks "
+            "(pipeline source, skill, and shared-lib repos). Filter by name/owner "
+            "text and/or kind. Returns repo_id, domain, owner, name, kind, and the "
+            "on-disk checkout path. Use the repo_id with repo_files/repo_read/"
+            "repo_grep/repo_history/repo_diff."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Substring match on owner/name/domain"},
+                "kind": {
+                    "type": "string",
+                    "enum": ["pipeline_source", "skill", "shared_lib", "results"],
+                    "description": "Filter by repository kind",
+                },
+                "limit": {"type": "integer", "description": "Max results", "default": 25},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "repo_files",
+        "description": (
+            "List files in a checked-out repository, optionally filtered by a glob "
+            "pattern (e.g. '**/*.py', 'ci/*.yml'). Returns paths with size and line "
+            "counts. VCS internals (.git) and secret files are never listed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo_id": {"type": "integer", "description": "Repository id from repo_search"},
+                "glob_pattern": {"type": "string", "description": "Glob to filter files (default: all files)"},
+                "limit": {"type": "integer", "description": "Max files", "default": 100},
+            },
+            "required": ["repo_id"],
+        },
+    },
+    {
+        "name": "repo_read",
+        "description": (
+            "Read a file from a checked-out repository by repo_id and relative path. "
+            "Content is truncated at 10KB; use start_line/end_line for large files. "
+            "Reads of .git internals or secret files are denied."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo_id": {"type": "integer", "description": "Repository id from repo_search"},
+                "filepath": {"type": "string", "description": "Path relative to the repo root"},
+                "start_line": {"type": "integer", "description": "1-based first line to read"},
+                "end_line": {"type": "integer", "description": "1-based last line to read"},
+            },
+            "required": ["repo_id", "filepath"],
+        },
+    },
+    {
+        "name": "repo_grep",
+        "description": (
+            "Search for a string/regex across a checked-out repository. Returns "
+            "file, line number, and matching text. .git internals and secret files "
+            "are excluded."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo_id": {"type": "integer", "description": "Repository id from repo_search"},
+                "query": {"type": "string", "description": "String or regex to search for"},
+                "glob": {"type": "string", "description": "Restrict to files matching this glob"},
+                "case_sensitive": {"type": "boolean", "description": "Case-sensitive match", "default": False},
+                "limit": {"type": "integer", "description": "Max matches", "default": 50},
+            },
+            "required": ["repo_id", "query"],
+        },
+    },
+    {
+        "name": "repo_history",
+        "description": (
+            "Get git commit history (git log) for a checked-out repository, "
+            "optionally for a single file. Returns commit sha, author, date, message."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo_id": {"type": "integer", "description": "Repository id from repo_search"},
+                "filepath": {"type": "string", "description": "Limit history to this path (optional)"},
+                "limit": {"type": "integer", "description": "Max commits", "default": 20},
+            },
+            "required": ["repo_id"],
+        },
+    },
+    {
+        "name": "repo_diff",
+        "description": (
+            "Diff two refs (commits, branches, tags) in a checked-out repository. "
+            "Returns a unified diff with a stat summary; large diffs are truncated."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo_id": {"type": "integer", "description": "Repository id from repo_search"},
+                "ref1": {"type": "string", "description": "Base ref"},
+                "ref2": {"type": "string", "description": "Compare ref"},
+                "filepath": {"type": "string", "description": "Restrict diff to this path (optional)"},
+            },
+            "required": ["repo_id", "ref1", "ref2"],
         },
     },
 ]
@@ -696,6 +876,53 @@ async def _handle_query_artifacts(db: aiosqlite.Connection, input: dict) -> dict
     return {"artifacts": artifacts, "count": len(artifacts)}
 
 
+async def _handle_search_job_traces(db: aiosqlite.Connection, input: dict) -> dict:
+    query = input.get("query")
+    if not query or not str(query).strip():
+        return {"error": "query is required"}
+    return await traces_crud.search_trace_content(
+        db,
+        str(query),
+        event_type=input.get("event_type"),
+        pipeline_slug=input.get("pipeline_slug"),
+        limit=input.get("limit", 50),
+    )
+
+
+async def _handle_list_issues(db: aiosqlite.Connection, input: dict) -> dict:
+    return await issues_crud.list_issues(
+        db,
+        search=input.get("search"),
+        limit=input.get("limit", 100),
+        offset=input.get("offset", 0),
+    )
+
+
+_MAX_TRACE_EVENT_CONTENT = 500
+
+
+async def _handle_get_run_trace(db: aiosqlite.Connection, input: dict) -> dict:
+    run_id = input.get("run_id")
+    if run_id is None:
+        return {"error": "run_id is required"}
+    limit = max(1, min(int(input.get("limit", 60) or 60), 200))
+    summary = await traces_crud.get_run_trace_summary(db, run_id)
+    events = await traces_crud.get_run_trace_events(
+        db,
+        run_id,
+        event_type=input.get("event_type"),
+        limit=limit,
+        offset=input.get("offset", 0),
+    )
+    # Trace event content can be very large (full tool-call payloads); truncate
+    # each event so a page of results fits the chat context guard.
+    for ev in events.get("events", []):
+        content = ev.get("content")
+        if isinstance(content, str) and len(content) > _MAX_TRACE_EVENT_CONTENT:
+            ev["content"] = content[:_MAX_TRACE_EVENT_CONTENT] + "…[truncated]"
+    return {"run_id": run_id, "summary": summary, **events}
+
+
 async def _handle_kb_search(db: aiosqlite.Connection, input: dict) -> dict:
     results = await kb_crud.search_articles(db, input["query"], input.get("limit", 10))
     return {"articles": results, "count": len(results)}
@@ -726,7 +953,43 @@ _MAX_BROWSE_ENTRIES = 100
 
 def _get_allowed_roots() -> list[Path]:
     from backend.config import settings
-    return [Path(p.strip()) for p in settings.chat_browse_roots.split(",") if p.strip()]
+    # Resolve each root so relative roots (e.g. "checkouts" in local dev) match
+    # the resolved absolute target path compared against them in _validate_path.
+    return [
+        Path(p.strip()).resolve()
+        for p in settings.chat_browse_roots.split(",")
+        if p.strip()
+    ]
+
+
+# --- Secrets / VCS-internals denylist ---------------------------------------
+# Layered on top of the allow-list check in _validate_path(). Necessary because
+# /checkouts (git working trees) is now a browse root: git tokens must never be
+# read from a repo's .git/config, and common secret files must be unreadable via
+# repo_read / browse_files / read_file / search_files. See ADR-0028.
+_DENIED_PATH_COMPONENTS = {".git"}
+_DENIED_FILENAMES = {
+    ".env", ".npmrc", ".netrc", ".pgpass", ".git-credentials",
+    ".dockercfg", ".htpasswd", "credentials", "credentials.json",
+}
+_DENIED_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".keystore", ".jks")
+_DENIED_NAME_SUBSTRINGS = ("id_rsa", "id_dsa", "id_ecdsa", "id_ed25519")
+
+
+def _is_denied_path(path: Path) -> bool:
+    """True if a path is protected (VCS internals or a common secret file)."""
+    if any(comp in _DENIED_PATH_COMPONENTS for comp in path.parts):
+        return True
+    lname = path.name.lower()
+    if lname in _DENIED_FILENAMES:
+        return True
+    if lname.startswith(".env"):  # .env, .env.local, .env.production, ...
+        return True
+    if any(lname.endswith(suf) for suf in _DENIED_SUFFIXES):
+        return True
+    if any(sub in lname for sub in _DENIED_NAME_SUBSTRINGS):
+        return True
+    return False
 
 
 def _validate_path(raw: str) -> Path:
@@ -736,6 +999,11 @@ def _validate_path(raw: str) -> Path:
         raise ValueError(
             f"Access denied: {raw} is outside allowed directories "
             f"({', '.join(str(r) for r in allowed)})"
+        )
+    if _is_denied_path(resolved):
+        raise ValueError(
+            f"Access denied: {raw} matches a protected path "
+            "(.git internals or a secret file)"
         )
     return resolved
 
@@ -756,6 +1024,8 @@ async def _handle_browse_files(_db: aiosqlite.Connection, input: dict) -> dict:
         for p in sorted(target.rglob("*")):
             if len(entries) >= _MAX_BROWSE_ENTRIES:
                 break
+            if _is_denied_path(p):  # hide .git internals and secret files
+                continue
             entries.append({
                 "path": str(p),
                 "type": "dir" if p.is_dir() else "file",
@@ -763,6 +1033,8 @@ async def _handle_browse_files(_db: aiosqlite.Connection, input: dict) -> dict:
             })
     else:
         for p in sorted(target.iterdir()):
+            if _is_denied_path(p):  # hide .git internals and secret files
+                continue
             entries.append({
                 "path": str(p),
                 "name": p.name,
@@ -886,6 +1158,12 @@ async def _handle_search_files(_db: aiosqlite.Connection, input: dict) -> dict:
     case_sensitive = input.get("case_sensitive", False)
 
     cmd = ["grep", "-rn", "--binary-files=without-match"]
+    # Never recurse into VCS internals or surface common secret files.
+    cmd.append("--exclude-dir=.git")
+    for _pat in ("*.pem", "*.key", "*.p12", "*.pfx", "*.keystore", "*.jks",
+                 ".env*", ".npmrc", ".netrc", ".pgpass", ".git-credentials",
+                 "id_rsa*", "id_ed25519*", "id_ecdsa*", "id_dsa*"):
+        cmd.append(f"--exclude={_pat}")
     if not case_sensitive:
         cmd.append("-i")
     if input.get("glob"):
@@ -912,6 +1190,8 @@ async def _handle_search_files(_db: aiosqlite.Connection, input: dict) -> dict:
         if sep2 == -1:
             continue
         file_path = line[:sep]
+        if _is_denied_path(Path(file_path)):  # defense-in-depth over --exclude
+            continue
         line_no = rest[:sep2]
         content = rest[sep2 + 1:]
         if len(content) > 200:
@@ -1241,27 +1521,100 @@ async def _handle_query_github(db: aiosqlite.Connection, input: dict) -> dict:
         return {"error": f"Failed to reach GitHub emulator at {endpoint}: {e}"}
 
 
+def _jira_scrub(text: str, token: str | None) -> str:
+    """Defensively redact the Jira API token from any surfaced error text."""
+    if token and text:
+        text = text.replace(token, "***")
+    return text
+
+
 async def _handle_query_jira(db: aiosqlite.Connection, input: dict) -> dict:
+    """Query the configured Jira instance via JQL.
+
+    The endpoint comes from ``settings.jira_url`` (from .env) or, if set, a Jira
+    data source's endpoint (which overrides). The secret API token is read only
+    from settings (``settings.jira_token``) and never from the data source, so it
+    is never stored in the DB or returned by any API.
+
+    Auth follows the instance type (mirrors personal_assistant's jira_client):
+    Jira Cloud (``*.atlassian.net``) uses Basic auth (email:token); Server/Data
+    Center uses a Bearer PAT. An explicit ``config.auth_type`` overrides.
+    """
+    from backend.config import settings
+
+    # Endpoint: a Jira data-source row (if present) overrides the .env URL.
     endpoint = await _resolve_endpoint(db, "jira")
+    _, config = await _resolve_source(db, "jira")
     if not endpoint:
-        return {"error": "No active Jira data source configured. Add one in Intelligence Settings."}
+        endpoint = (settings.jira_url or "").rstrip("/")
+    if not endpoint:
+        return {
+            "error": "No Jira configured. Set JIRA_URL (and JIRA_API_TOKEN, plus "
+            "JIRA_EMAIL for Jira Cloud) in .env, or add a Jira data source in "
+            "Intelligence Settings."
+        }
 
     jql = input["jql"]
     fields = input.get("fields", "key,summary,status,issuetype,priority,created")
     max_results = min(input.get("max_results", 20), 50)
 
+    token = settings.jira_token
+    email = settings.jira_email
+    is_cloud = ".atlassian.net" in endpoint.lower()
+    auth_type = (config.get("auth_type") or ("basic" if is_cloud else "bearer")).lower()
+
+    headers = {"Accept": "application/json"}
+    note = None
+    if token:
+        if auth_type == "basic":
+            if not email:
+                return {
+                    "error": "Jira Cloud basic auth requires an email. Set "
+                    "JIRA_EMAIL in .env."
+                }
+            cred = base64.b64encode(f"{email}:{token}".encode()).decode()
+            headers["Authorization"] = f"Basic {cred}"
+        else:
+            headers["Authorization"] = f"Bearer {token}"
+    else:
+        note = "unauthenticated: no Jira API token configured (set JIRA_API_TOKEN in .env)"
+
+    # Jira Cloud removed GET /rest/api/{2,3}/search (HTTP 410). The current
+    # search API is /rest/api/3/search/jql (token-paginated, no `total`).
+    # Server/Data Center still uses the classic /rest/api/2/search.
+    if is_cloud:
+        search_url = f"{endpoint}/rest/api/3/search/jql"
+    else:
+        api_version = str(config.get("api_version", "2"))
+        search_url = f"{endpoint}/rest/api/{api_version}/search"
+
     try:
-        async with httpx.AsyncClient(verify=False, timeout=15) as client:
+        async with httpx.AsyncClient(
+            verify=settings.ssl_verify, timeout=20, headers=headers
+        ) as client:
             resp = await client.get(
-                f"{endpoint}/rest/api/2/search",
+                search_url,
                 params={"jql": jql, "fields": fields, "maxResults": max_results},
             )
             resp.raise_for_status()
             data = resp.json()
+            # Cloud's /search/jql omits a total; fetch an approximate count
+            # (best-effort — never fail the search over it).
+            approx_total = data.get("total")
+            if is_cloud:
+                try:
+                    cresp = await client.post(
+                        f"{endpoint}/rest/api/3/search/approximate-count",
+                        json={"jql": jql},
+                    )
+                    if cresp.status_code == 200:
+                        approx_total = cresp.json().get("count")
+                except Exception:  # noqa: BLE001
+                    pass
     except httpx.HTTPStatusError as e:
-        return {"error": f"Jira returned {e.response.status_code}: {e.response.text[:200]}"}
+        return {"error": _jira_scrub(f"Jira returned {e.response.status_code}: {e.response.text[:200]}", token)}
     except Exception as e:
-        return {"error": f"Failed to reach Jira at {endpoint}: {e}"}
+        return {"error": _jira_scrub(f"Failed to reach Jira at {endpoint}: {e}", token)}
 
     issues = []
     for issue in data.get("issues", []):
@@ -1274,7 +1627,13 @@ async def _handle_query_jira(db: aiosqlite.Connection, input: dict) -> dict:
             "priority": f.get("priority", {}).get("name") if isinstance(f.get("priority"), dict) else f.get("priority"),
             "created": f.get("created"),
         })
-    return {"issues": issues, "total": data.get("total", 0), "count": len(issues)}
+
+    result = {"issues": issues, "count": len(issues), "total": approx_total}
+    if is_cloud and not data.get("isLast", True):
+        result["has_more"] = True
+    if note:
+        result["note"] = note
+    return result
 
 
 async def _handle_query_mlflow(db: aiosqlite.Connection, input: dict) -> dict:
@@ -1398,6 +1757,183 @@ async def _handle_query_data_sources(db: aiosqlite.Connection, input: dict) -> d
     return {"data_sources": summary, "count": len(summary)}
 
 
+# ---------------------------------------------------------------------------
+# Repository tools — read checked-out repos under settings.checkout_root.
+# All path access routes through _validate_path(), which enforces both the
+# allow-list (/checkouts must be a browse root) and the .git/secrets denylist.
+# repo_history/repo_diff run local git (no network, no credentials).
+# ---------------------------------------------------------------------------
+
+
+async def _resolve_repo_root(db: aiosqlite.Connection, repo_id) -> tuple[Path | None, dict]:
+    """Resolve a repo_id to its checkout root. Returns (root, repo) or
+    (None, {"error": ...})."""
+    from backend.crud.repositories import get_repository
+    try:
+        rid = int(repo_id)
+    except (TypeError, ValueError):
+        return None, {"error": f"Invalid repo_id: {repo_id!r}"}
+    repo = await get_repository(db, rid)
+    if repo is None:
+        return None, {"error": f"Repository {rid} not found"}
+    root = Path(repo["checkout_path"])
+    if not root.exists():
+        return None, {
+            "error": f"Repository {rid} is not checked out yet at {root}. "
+            "Trigger a sync (POST /api/v1/repositories/{id}/sync) or wait for the "
+            "next sync cycle."
+        }
+    return root, repo
+
+
+async def _handle_repo_search(db: aiosqlite.Connection, input: dict) -> dict:
+    from backend.crud.repositories import list_repositories
+    repos = await list_repositories(db, kind=input.get("kind"))
+    query = (input.get("query") or "").lower()
+    limit = min(input.get("limit", 25), 100)
+    results = []
+    for r in repos:
+        hay = f"{r['domain']}/{r['owner']}/{r['name']}".lower()
+        if query and query not in hay:
+            continue
+        results.append({
+            "repo_id": r["id"],
+            "domain": r["domain"],
+            "owner": r["owner"],
+            "name": r["name"],
+            "kind": r["kind"],
+            "status": r["status"],
+            "default_branch": r["default_branch"],
+            "checkout_path": r["checkout_path"],
+            "last_synced_at": r.get("last_synced_at"),
+        })
+        if len(results) >= limit:
+            break
+    return {"repositories": results, "count": len(results)}
+
+
+async def _handle_repo_files(db: aiosqlite.Connection, input: dict) -> dict:
+    root, repo = await _resolve_repo_root(db, input.get("repo_id"))
+    if root is None:
+        return repo
+    pattern = input.get("glob_pattern") or "**/*"
+    limit = min(input.get("limit", 100), _MAX_BROWSE_ENTRIES)
+    files = []
+    try:
+        for p in sorted(root.glob(pattern)):
+            if not p.is_file() or _is_denied_path(p):
+                continue
+            try:
+                size = p.stat().st_size
+                lines = None
+                if size <= _MAX_FILE_SIZE * 20:
+                    with open(p, "r", errors="replace") as f:
+                        lines = sum(1 for _ in f)
+            except OSError:
+                size, lines = None, None
+            files.append({
+                "path": str(p.relative_to(root)),
+                "size": size,
+                "lines": lines,
+            })
+            if len(files) >= limit:
+                break
+    except ValueError as e:
+        return {"error": f"Invalid glob pattern: {e}"}
+    return {"repo_id": repo["id"], "files": files, "count": len(files)}
+
+
+async def _handle_repo_read(db: aiosqlite.Connection, input: dict) -> dict:
+    root, repo = await _resolve_repo_root(db, input.get("repo_id"))
+    if root is None:
+        return repo
+    target = (root / input["filepath"])
+    # Delegate to read_file: enforces allow-list + denylist via _validate_path.
+    return await _handle_read_file(db, {
+        "path": str(target),
+        "start_line": input.get("start_line"),
+        "end_line": input.get("end_line"),
+    })
+
+
+async def _handle_repo_grep(db: aiosqlite.Connection, input: dict) -> dict:
+    root, repo = await _resolve_repo_root(db, input.get("repo_id"))
+    if root is None:
+        return repo
+    return await _handle_search_files(db, {
+        "path": str(root),
+        "pattern": input["query"],
+        "glob": input.get("glob"),
+        "case_sensitive": input.get("case_sensitive", False),
+        "max_results": input.get("limit", 50),
+    })
+
+
+def _run_git(root: Path, args: list[str]) -> tuple[int, str, str]:
+    import subprocess
+    proc = subprocess.run(
+        ["git", "-C", str(root), *args],
+        capture_output=True, text=True, timeout=15, errors="replace",
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+async def _handle_repo_history(db: aiosqlite.Connection, input: dict) -> dict:
+    root, repo = await _resolve_repo_root(db, input.get("repo_id"))
+    if root is None:
+        return repo
+    limit = min(input.get("limit", 20), 100)
+    args = ["log", f"-n{limit}", "--pretty=format:%H%x1f%an%x1f%aI%x1f%s"]
+    if input.get("filepath"):
+        args += ["--", input["filepath"]]
+    try:
+        code, out, err = _run_git(root, args)
+    except Exception as e:
+        return {"error": f"git log failed: {e}"}
+    if code != 0:
+        return {"error": f"git log failed: {err.strip()[:200]}"}
+    commits = []
+    for line in out.splitlines():
+        parts = line.split("\x1f")
+        if len(parts) == 4:
+            commits.append({
+                "commit": parts[0], "author": parts[1],
+                "date": parts[2], "message": parts[3],
+            })
+    return {"repo_id": repo["id"], "commits": commits, "count": len(commits)}
+
+
+_MAX_DIFF_CHARS = 40 * 1024
+
+
+async def _handle_repo_diff(db: aiosqlite.Connection, input: dict) -> dict:
+    root, repo = await _resolve_repo_root(db, input.get("repo_id"))
+    if root is None:
+        return repo
+    ref1, ref2 = input["ref1"], input["ref2"]
+    stat_args = ["diff", "--stat", ref1, ref2]
+    diff_args = ["diff", ref1, ref2]
+    if input.get("filepath"):
+        stat_args += ["--", input["filepath"]]
+        diff_args += ["--", input["filepath"]]
+    try:
+        code, stat_out, err = _run_git(root, stat_args)
+        if code != 0:
+            return {"error": f"git diff failed: {err.strip()[:200]}"}
+        _, diff_out, _ = _run_git(root, diff_args)
+    except Exception as e:
+        return {"error": f"git diff failed: {e}"}
+    truncated = len(diff_out) > _MAX_DIFF_CHARS
+    return {
+        "repo_id": repo["id"],
+        "ref1": ref1,
+        "ref2": ref2,
+        "stat": stat_out.strip(),
+        "diff": diff_out[:_MAX_DIFF_CHARS],
+        "truncated": truncated,
+    }
+
+
 _TOOL_HANDLERS = {
     "query_pipelines": _handle_query_pipelines,
     "query_runs": _handle_query_runs,
@@ -1408,6 +1944,9 @@ _TOOL_HANDLERS = {
     "query_telemetry": _handle_query_telemetry,
     "query_vulnerabilities": _handle_query_vulnerabilities,
     "query_artifacts": _handle_query_artifacts,
+    "search_job_traces": _handle_search_job_traces,
+    "list_issues": _handle_list_issues,
+    "get_run_trace": _handle_get_run_trace,
     "kb_search": _handle_kb_search,
     "kb_get": _handle_kb_get,
     "kb_suggest": _handle_kb_suggest,
@@ -1420,6 +1959,12 @@ _TOOL_HANDLERS = {
     "search_files": _handle_search_files,
     "file_stats": _handle_file_stats,
     "parse_strace": _handle_parse_strace,
+    "repo_search": _handle_repo_search,
+    "repo_files": _handle_repo_files,
+    "repo_read": _handle_repo_read,
+    "repo_grep": _handle_repo_grep,
+    "repo_history": _handle_repo_history,
+    "repo_diff": _handle_repo_diff,
 }
 
 

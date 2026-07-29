@@ -270,6 +270,19 @@ CREATE TABLE IF NOT EXISTS trace_events (
 CREATE INDEX IF NOT EXISTS idx_trace_events_run ON trace_events(pipeline_run_id);
 CREATE INDEX IF NOT EXISTS idx_trace_events_type ON trace_events(event_type);
 
+-- Derived index of Jira issue keys found in trace/artifact content.
+-- Grain: one row per (jira_key, run, source). Rebuilt by crud.issues and kept
+-- current incrementally as job traces are parsed.
+CREATE TABLE IF NOT EXISTS issue_references (
+    jira_key TEXT NOT NULL,
+    pipeline_run_id INTEGER NOT NULL REFERENCES pipeline_runs(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    match_count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (jira_key, pipeline_run_id, source)
+);
+CREATE INDEX IF NOT EXISTS idx_issue_references_key ON issue_references(jira_key);
+CREATE INDEX IF NOT EXISTS idx_issue_references_run ON issue_references(pipeline_run_id);
+
 CREATE TABLE IF NOT EXISTS trace_packages (
     id INTEGER PRIMARY KEY,
     pipeline_run_id INTEGER REFERENCES pipeline_runs(id) ON DELETE CASCADE,
@@ -859,6 +872,40 @@ CREATE TABLE IF NOT EXISTS data_sources (
 );
 CREATE INDEX IF NOT EXISTS idx_data_sources_type ON data_sources(source_type);
 CREATE INDEX IF NOT EXISTS idx_data_sources_status ON data_sources(status);
+
+-- Repository registry: normalizes repo references from pipelines.repo_url,
+-- pipeline_skills.repo_url, and pipeline_shared_libs.repo_url into one entity
+-- keyed by (domain, owner, name) so a repo referenced from many places dedupes
+-- to a single row. Derived/synced index for checkout management + chat tools;
+-- the existing repo_url columns remain the source of truth for pipeline CRUD.
+CREATE TABLE IF NOT EXISTS repositories (
+    id INTEGER PRIMARY KEY,
+    domain TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('pipeline_source', 'skill', 'shared_lib', 'results')),
+    git_url TEXT NOT NULL,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'archived')),
+    default_branch TEXT NOT NULL DEFAULT 'main',
+    last_synced_at TIMESTAMP,
+    last_sync_status TEXT,
+    last_sync_error TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (domain, owner, name)
+);
+CREATE INDEX IF NOT EXISTS idx_repositories_status ON repositories(status);
+
+CREATE TABLE IF NOT EXISTS pipeline_repository_links (
+    pipeline_id INTEGER NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE,
+    repository_id INTEGER NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+    relation TEXT NOT NULL CHECK (relation IN ('source', 'skill', 'shared_lib', 'results')),
+    purpose TEXT,
+    branch TEXT,
+    PRIMARY KEY (pipeline_id, repository_id, relation)
+);
+CREATE INDEX IF NOT EXISTS idx_pipeline_repo_links_repo ON pipeline_repository_links(repository_id);
 """
 
 
@@ -1199,6 +1246,127 @@ async def _ensure_artifact_scrape_attempts_column(db: aiosqlite.Connection) -> N
         await db.commit()
 
 
+def parse_repo_url(url: str) -> tuple[str, str, str] | None:
+    """Parse a git URL into (domain, owner, name).
+
+    Handles HTTPS URLs (``https://github.com/owner/repo.git``) and SCP-style
+    SSH URLs (``git@github.com:owner/repo.git``). ``owner`` may contain nested
+    GitLab subgroups (``group/subgroup``); ``name`` is always the final path
+    segment with any ``.git`` suffix stripped. Returns ``None`` if the URL
+    cannot be parsed into all three parts.
+    """
+    from urllib.parse import urlparse
+
+    if not url:
+        return None
+    raw = url.strip()
+
+    # SCP-style: git@host:owner/repo.git  → normalize to a parseable form.
+    if "://" not in raw and "@" in raw and ":" in raw.split("@", 1)[1]:
+        host_part, path_part = raw.split("@", 1)[1].split(":", 1)
+        domain = host_part
+        path = path_part
+    else:
+        parsed = urlparse(raw)
+        domain = parsed.hostname or ""
+        path = parsed.path
+
+    path = path.strip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    parts = [p for p in path.split("/") if p]
+    if not domain or len(parts) < 2:
+        return None
+    name = parts[-1]
+    owner = "/".join(parts[:-1])
+    return domain, owner, name
+
+
+async def upsert_repository(
+    db: aiosqlite.Connection, git_url: str, kind: str
+) -> int | None:
+    """Insert (or find) a repositories row for ``git_url``. Returns its id.
+
+    Dedupes on ``(domain, owner, name)`` — the same repo referenced from
+    multiple pipelines/skills/shared-libs maps to one row. ``kind`` is only set
+    on first insert (INSERT OR IGNORE); the precise per-pipeline relationship is
+    recorded on ``pipeline_repository_links.relation``. Returns ``None`` if the
+    URL cannot be parsed. Caller is responsible for committing.
+    """
+    parsed = parse_repo_url(git_url)
+    if parsed is None:
+        return None
+    domain, owner, name = parsed
+    await db.execute(
+        """INSERT OR IGNORE INTO repositories (domain, owner, name, kind, git_url)
+           VALUES (?, ?, ?, ?, ?)""",
+        (domain, owner, name, kind, git_url),
+    )
+    cursor = await db.execute(
+        "SELECT id FROM repositories WHERE domain = ? AND owner = ? AND name = ?",
+        (domain, owner, name),
+    )
+    row = await cursor.fetchone()
+    return row["id"] if row else None
+
+
+async def link_repository(
+    db: aiosqlite.Connection,
+    pipeline_id: int,
+    repository_id: int,
+    relation: str,
+    purpose: str | None = None,
+    branch: str | None = None,
+) -> None:
+    """Link a pipeline to a repository in a given relation. Caller commits."""
+    await db.execute(
+        """INSERT OR IGNORE INTO pipeline_repository_links
+           (pipeline_id, repository_id, relation, purpose, branch)
+           VALUES (?, ?, ?, ?, ?)""",
+        (pipeline_id, repository_id, relation, purpose, branch),
+    )
+
+
+async def _backfill_repositories(db: aiosqlite.Connection) -> None:
+    """Populate repositories + pipeline_repository_links from existing repo_url
+    references, deduping on (domain, owner, name). Idempotent via INSERT OR IGNORE."""
+    # Pipeline source repos.
+    cursor = await db.execute(
+        "SELECT id, repo_url FROM pipelines WHERE repo_url IS NOT NULL AND repo_url != ''"
+    )
+    for row in await cursor.fetchall():
+        repo_id = await upsert_repository(db, row["repo_url"], "pipeline_source")
+        if repo_id is not None:
+            await link_repository(db, row["id"], repo_id, "source")
+
+    # Skill repos.
+    cursor = await db.execute(
+        """SELECT pipeline_id, repo_url, branch, purpose FROM pipeline_skills
+           WHERE repo_url IS NOT NULL AND repo_url != ''"""
+    )
+    for row in await cursor.fetchall():
+        repo_id = await upsert_repository(db, row["repo_url"], "skill")
+        if repo_id is not None:
+            await link_repository(
+                db, row["pipeline_id"], repo_id, "skill",
+                purpose=row["purpose"], branch=row["branch"],
+            )
+
+    # Shared lib repos.
+    cursor = await db.execute(
+        """SELECT pipeline_id, repo_url, purpose FROM pipeline_shared_libs
+           WHERE repo_url IS NOT NULL AND repo_url != ''"""
+    )
+    for row in await cursor.fetchall():
+        repo_id = await upsert_repository(db, row["repo_url"], "shared_lib")
+        if repo_id is not None:
+            await link_repository(
+                db, row["pipeline_id"], repo_id, "shared_lib", purpose=row["purpose"]
+            )
+
+    await db.commit()
+
+
 async def init_schema(db: aiosqlite.Connection) -> None:
     """Apply schema directly (for tests and first-run initialization)."""
     await db.executescript(_SCHEMA_SQL)
@@ -1210,4 +1378,5 @@ async def init_schema(db: aiosqlite.Connection) -> None:
     await _ensure_claim_consolidation_columns(db)
     await _ensure_chat_blocks_column(db)
     await _ensure_artifact_scrape_attempts_column(db)
+    await _backfill_repositories(db)
     await db.execute("PRAGMA foreign_keys=ON")

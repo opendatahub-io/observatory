@@ -10,10 +10,10 @@ ORG_PULSE_PATH = Path(__file__).resolve().parent.parent.parent / "org-pulse-conf
 
 
 @pytest.mark.asyncio
-async def test_load_org_pulse_produces_six_pipelines():
-    """Loading org-pulse-config.json should produce 6 pipelines."""
+async def test_load_org_pulse_produces_seven_pipelines():
+    """Loading org-pulse-config.json should produce 7 pipelines."""
     pipelines = await load_org_pulse_config(ORG_PULSE_PATH)
-    assert len(pipelines) == 6
+    assert len(pipelines) == 7
 
 
 @pytest.mark.asyncio
@@ -63,9 +63,10 @@ async def test_group_and_display_order_stored(tmp_db):
     assert result["rfe-assessor"] == ("RFE", 1)
     assert result["rfe-autofixer"] == ("RFE", 2)
     assert result["strat-pipeline"] == ("Strats", 3)
-    assert result["epic-decomposer"] == ("Epics", 4)
-    assert result["autofix"] == ("Bugs", 5)
-    assert result["strat-security-reviews"] == ("Strats", 6)
+    assert result["test-plan-generator"] == ("Strats", 4)
+    assert result["strat-security-reviews"] == ("Strats", 4)
+    assert result["epic-decomposer"] == ("Epics", 5)
+    assert result["autofix"] == ("Bugs", 6)
 
 
 @pytest.mark.asyncio
@@ -90,7 +91,7 @@ async def test_rfe_autofixer_has_jobs(tmp_db):
 
 @pytest.mark.asyncio
 async def test_autofix_has_job_patterns(tmp_db):
-    """The autofix pipeline has jobPatterns=["iterate-*", "triage-*", "autofix-*"]."""
+    """The autofix pipeline has jobPatterns=["prepare-*", "iterate-*", "triage-*", "autofix-*"]."""
     from backend.database import get_db
 
     db = await get_db()
@@ -104,7 +105,7 @@ async def test_autofix_has_job_patterns(tmp_db):
     row = await cursor.fetchone()
     assert row is not None
     patterns = json.loads(row[0])
-    assert patterns == ["iterate-*", "triage-*", "autofix-*"]
+    assert patterns == ["prepare-*", "iterate-*", "triage-*", "autofix-*"]
 
 
 @pytest.mark.asyncio
@@ -157,7 +158,7 @@ async def test_seed_idempotent_org_pulse(tmp_db):
     cursor = await db.execute("SELECT COUNT(*) FROM pipeline_jira_contracts")
     jira2 = (await cursor.fetchone())[0]
 
-    assert count1 == count2 == 6
+    assert count1 == count2 == 7
     assert skills1 == skills2
     assert jira1 == jira2
 

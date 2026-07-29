@@ -10,3 +10,20 @@ spec:
   resources:
     requests:
       storage: 1Gi
+---
+# Git repository checkouts synced by backend.git_sync into
+# /checkouts/{domain}/{owner}/{name}. The backend pod both writes (sync loop)
+# and reads (chat repo_* tools) this volume, so ReadWriteOnce is sufficient.
+# Repos are shallow-cloned; size deliberately to bound growth (see ADR-0028).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: observatory-checkouts
+  labels:
+    app.kubernetes.io/name: observatory
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi

@@ -51,6 +51,14 @@ Use query_github to query the GitHub emulator for repositories, branches,
 commits, pull requests, file contents, or code/issue search. It requires a
 github_emulator data source configured in Intelligence Settings.
 
+Use query_jira to query the live, authenticated Jira instance with JQL for the
+current state of tickets (status, assignee, summaries, counts). The JQL must be
+bounded (a project, key, filter, or date). Prefer query_jira for "what is the
+status of X" / "how many open issues in project Y" questions. This differs from
+list_issues (below), which enumerates Jira keys that appear in local CI job
+output — use list_issues to find which pipeline runs reference a key, and
+query_jira to learn what that key actually is in Jira.
+
 If you discover recurring questions that would benefit from a knowledge base article,
 use the kb_suggest tool to propose one.
 
@@ -69,7 +77,44 @@ Known artifact directory conventions (subdirs may or may not be present):
   verification/ — Claim verification results
   explanations/ — Claim explanations
   jobs/      — K8s job logs
-  apibodies/ — Raw API request/response bodies"""
+  apibodies/ — Raw API request/response bodies
+
+## Finding job/run data by Jira key or free text
+
+A Jira issue key (e.g. RHAISTRAT-2364) or other token often appears ONLY inside
+job output — parsed trace events or the raw job console log — not in any
+structured column.
+  - To ENUMERATE or BROWSE issues (e.g. "which issues appear most", "list
+    RHAISTRAT issues", "issues touched by the autofix pipeline"), call
+    list_issues. It returns distinct Jira keys with run/pipeline/match counts and
+    supports a `search` substring filter. It is backed by an index of real Jira
+    projects, so it will not return noise tokens.
+  - To find which runs relate to a SPECIFIC token, call search_job_traces with
+    the token as `query`. It searches both parsed trace events and raw job_trace
+    logs and returns a per-run rollup (run_id, pipeline, status, web_url, match
+    counts) plus sample snippets.
+  - Then call get_run_trace with a run_id to drill into that run's events,
+    packages, and metadata.
+query_claims(jira_key=...) only finds a Jira key if it has linked *claims*; when
+that returns nothing, fall back to list_issues / search_job_traces, which search
+job output.
+
+## Repository source access
+
+Observatory maintains a registry of the git repositories referenced by pipelines
+(pipeline source, skills, shared libraries), checked out locally so you can read
+their source when diagnosing pipelines or claims. Use the repo_* tools rather than
+browsing /checkouts by hand:
+  repo_search  — find registered repos by name/owner/kind; returns a repo_id.
+  repo_files   — list files in a repo (optional glob_pattern).
+  repo_read    — read a file's contents (optional start_line/end_line).
+  repo_grep    — search file contents within a repo.
+  repo_history — recent commit history (optionally for one file).
+  repo_diff    — diff between two refs (branches/commits/tags), optionally one file.
+
+Always call repo_search FIRST to resolve a repo_id before the other repo_* tools.
+These tools are READ-ONLY. Secret files and .git internals are blocked; if a repo
+is not yet checked out the tool will say so — do not guess its contents."""
 
 
 async def _build_system_prompt(db) -> str:

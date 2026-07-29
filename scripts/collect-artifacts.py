@@ -114,6 +114,25 @@ def git_clone_url(repo_url: str, token: str) -> str:
     return f"{parsed.scheme}://oauth2:{token}@{parsed.netloc}{parsed.path}"
 
 
+def _harden_git_env(env: dict) -> dict:
+    """Stop git/ssh from launching an interactive or GUI credential prompt.
+
+    ``GIT_TERMINAL_PROMPT=0`` only suppresses the terminal prompt; git and ssh
+    will still invoke a graphical askpass helper (e.g. KDE's ``ksshaskpass``)
+    inherited via ``SSH_ASKPASS``/``DISPLAY``, which hangs a headless collector.
+    Emptying the askpass vars and dropping the display make auth-required repos
+    fail fast so they are logged and skipped. Mutates and returns ``env``.
+    """
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_ASKPASS"] = ""
+    env["SSH_ASKPASS"] = ""
+    env["SSH_ASKPASS_REQUIRE"] = "never"
+    env["GIT_SSH_COMMAND"] = "ssh -oBatchMode=yes"
+    for var in ("DISPLAY", "WAYLAND_DISPLAY"):
+        env.pop(var, None)
+    return env
+
+
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\[?[0-9;]*[a-zA-Z]")
 
 
@@ -235,7 +254,7 @@ def collect_data_repo(pipeline: dict) -> None:
     repo_dir = VAR / slug / "data-repo"
 
     clone_url = git_clone_url(results_repo, token)
-    env = dict(os.environ)
+    env = _harden_git_env(dict(os.environ))
     if not SSL_VERIFY:
         env["GIT_SSL_NO_VERIFY"] = "1"
 
@@ -274,7 +293,7 @@ def _clone_or_pull(repo_url: str, target_dir: Path, label: str) -> bool:
     """Shallow clone or pull a git repo. Returns True on success."""
     token = get_token(repo_url)
     clone_url = git_clone_url(repo_url, token) if token else repo_url
-    env = dict(os.environ)
+    env = _harden_git_env(dict(os.environ))
     if not SSL_VERIFY:
         env["GIT_SSL_NO_VERIFY"] = "1"
 
@@ -306,34 +325,20 @@ def _clone_or_pull(repo_url: str, target_dir: Path, label: str) -> bool:
 
 
 def collect_definitions(pipeline: dict) -> None:
-    """Clone/pull the pipeline source repo, skill repos, and shared lib repos."""
-    slug = pipeline["slug"]
-    repo = pipeline.get("repo", {})
-    repo_url = repo.get("url", "")
+    """DEPRECATED / no-op.
 
-    if not repo_url:
-        return
-
-    defs_dir = DEFS / slug
-
-    # Source repo
-    _clone_or_pull(repo_url, defs_dir / "source-repo", f"{slug}/source")
-
-    # Skill repos
-    for skill in pipeline.get("skillRepos", []):
-        skill_url = skill.get("repo", "")
-        if not skill_url:
-            continue
-        name = urlparse(skill_url).path.strip("/").split("/")[-1]
-        _clone_or_pull(skill_url, defs_dir / "skills" / name, f"{slug}/skills/{name}")
-
-    # Shared lib repos
-    for lib in pipeline.get("sharedLibs", []):
-        lib_url = lib.get("repo", "")
-        if not lib_url:
-            continue
-        name = urlparse(lib_url).path.strip("/").split("/")[-1]
-        _clone_or_pull(lib_url, defs_dir / "shared-libs" / name, f"{slug}/shared-libs/{name}")
+    Source, skill, and shared-lib repos are now synced by the backend service
+    into ``/checkouts/{domain}/{owner}/{name}`` via ``backend.git_sync`` and the
+    repository registry (see docs/plans/git-repo-mcp-tooling.md, ADR-0028).
+    Cloning them here too would double-clone the same repos under two directory
+    schemes, so this function no longer clones anything. ``collect_data_repo()``
+    (results repos) remains owned by the collector and is unaffected.
+    """
+    log.info(
+        "[%s] Skipping definition clone — repos are synced by the backend "
+        "registry into /checkouts (collect_definitions is deprecated)",
+        pipeline.get("slug", "?"),
+    )
 
 
 def main():

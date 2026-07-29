@@ -58,6 +58,14 @@ GITLAB_PIPELINE_RESPONSE = [
     },
 ]
 
+# A variant where every pipeline is in a terminal state. Used by tests that
+# assert an exact GET call count: the collector fetches a pipeline's jobs to
+# resolve a "running" status, so a terminal-only dataset triggers no extra calls.
+GITLAB_PIPELINE_RESPONSE_TERMINAL = [
+    {**p, "status": "success"} if p["status"] == "running" else p
+    for p in GITLAB_PIPELINE_RESPONSE
+]
+
 GITLAB_PROJECT_RESPONSE = {
     "id": 99999,
     "name": "rfe-autofixer",
@@ -138,10 +146,13 @@ async def test_gitlab_collect_runs(client):
     cursor = await db.execute("SELECT * FROM pipelines WHERE id = ?", (pid,))
     pipeline = dict(await cursor.fetchone())
 
-    # Mock responses: first call = project lookup, second = pipelines list
+    # Mock responses: project lookup, pipelines list, then a jobs fetch for the
+    # "running" pipeline (12347) — the collector resolves its real status from
+    # the jobs list. An active job keeps the pipeline "running".
     project_resp = _make_mock_response(200, GITLAB_PROJECT_RESPONSE)
     pipelines_resp = _make_mock_response(200, GITLAB_PIPELINE_RESPONSE)
-    mock_client = _build_mock_client([project_resp, pipelines_resp])
+    jobs_resp = _make_mock_response(200, [{"name": "build", "status": "running"}])
+    mock_client = _build_mock_client([project_resp, pipelines_resp, jobs_resp])
 
     with patch("backend.collector.gitlab.backend.config") as mock_config:
         mock_config.settings.gitlab_token = "fake-token"
@@ -222,8 +233,9 @@ async def test_gitlab_uses_existing_project_id(client):
     cursor = await db.execute("SELECT * FROM pipelines WHERE id = ?", (pid,))
     pipeline = dict(await cursor.fetchone())
 
-    # Only one call expected: the pipelines list (no project lookup)
-    pipelines_resp = _make_mock_response(200, GITLAB_PIPELINE_RESPONSE)
+    # Only one call expected: the pipelines list (no project lookup). Use a
+    # terminal-only dataset so no per-run job fetches are triggered.
+    pipelines_resp = _make_mock_response(200, GITLAB_PIPELINE_RESPONSE_TERMINAL)
     mock_client = _build_mock_client([pipelines_resp])
 
     with patch("backend.collector.gitlab.backend.config") as mock_config:
@@ -551,7 +563,8 @@ async def test_gitlab_no_job_filter_collects_all(client):
     # No jobs/job_patterns keys at all
     assert "jobs" not in pipeline or pipeline.get("jobs") is None
 
-    pipelines_resp = _make_mock_response(200, GITLAB_PIPELINE_RESPONSE)
+    # Terminal-only dataset: no pipeline is "running", so no per-run job fetches.
+    pipelines_resp = _make_mock_response(200, GITLAB_PIPELINE_RESPONSE_TERMINAL)
     mock_client = _build_mock_client([pipelines_resp])
 
     with patch("backend.collector.gitlab.backend.config") as mock_config:

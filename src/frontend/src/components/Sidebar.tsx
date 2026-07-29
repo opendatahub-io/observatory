@@ -16,6 +16,8 @@ import {
   BookOpen,
   Settings2,
   BadgeCheck,
+  GitBranch,
+  Ticket,
 } from "lucide-react";
 
 interface NavItem {
@@ -45,6 +47,7 @@ const NAV_SECTIONS: NavSection[] = [
       { to: "/vulnerabilities", label: "Vulnerabilities", icon: Shield },
       { to: "/hallucinations", label: "Hallucinations", icon: AlertTriangle },
       { to: "/claim-assurance", label: "Claim Assurance", icon: BadgeCheck },
+      { to: "/issues", label: "Issues", icon: Ticket },
       { to: "/agent-traces", label: "Traces", icon: Workflow },
       { to: "/otel-explorer", label: "OTEL Explorer", icon: Radio },
     ],
@@ -59,7 +62,10 @@ const NAV_SECTIONS: NavSection[] = [
   },
   {
     label: "Operations",
-    items: [{ to: "/collector", label: "Collector", icon: Activity }],
+    items: [
+      { to: "/collector", label: "Collector", icon: Activity },
+      { to: "/repositories", label: "Repositories", icon: GitBranch },
+    ],
   },
   {
     label: "Admin",

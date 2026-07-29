@@ -1,4 +1,4 @@
-"""Tests for the OTLP HTTP JSON receiver at /v1/traces."""
+"""Tests for the OTLP HTTP JSON receiver at /otel/v1/traces."""
 
 import json
 
@@ -76,7 +76,7 @@ TOKEN_COST_ATTRS = [
 async def test_post_valid_otlp_stores_span(client):
     payload = _make_otlp_payload()
 
-    resp = await client.post("/v1/traces", json=payload)
+    resp = await client.post("/otel/v1/traces", json=payload)
     assert resp.status_code == 200
     assert resp.json() == {}
 
@@ -117,7 +117,7 @@ async def test_pipeline_correlation(client):
         span_id="span-corr-001",
         name="rfe.review",
     )
-    resp = await client.post("/v1/traces", json=payload)
+    resp = await client.post("/otel/v1/traces", json=payload)
     assert resp.status_code == 200
 
     db = await get_db()
@@ -149,7 +149,7 @@ async def test_uncorrelated_span_stored_with_null_run_id(client):
         service_name="no-such-pipeline",
         trace_id="trace-orphan-001",
     )
-    resp = await client.post("/v1/traces", json=payload)
+    resp = await client.post("/otel/v1/traces", json=payload)
     assert resp.status_code == 200
 
     db = await get_db()
@@ -180,7 +180,7 @@ async def test_token_cost_extraction(client):
         name="rfe.review",
         attributes=TOKEN_COST_ATTRS,
     )
-    resp = await client.post("/v1/traces", json=payload)
+    resp = await client.post("/otel/v1/traces", json=payload)
     assert resp.status_code == 200
 
     db = await get_db()
@@ -218,14 +218,14 @@ async def test_token_cost_extraction(client):
 
 @pytest.mark.asyncio
 async def test_empty_payload_returns_200(client):
-    resp = await client.post("/v1/traces", json={})
+    resp = await client.post("/otel/v1/traces", json={})
     assert resp.status_code == 200
     assert resp.json() == {}
 
 
 @pytest.mark.asyncio
 async def test_empty_resource_spans_returns_200(client):
-    resp = await client.post("/v1/traces", json={"resourceSpans": []})
+    resp = await client.post("/otel/v1/traces", json={"resourceSpans": []})
     assert resp.status_code == 200
     assert resp.json() == {}
 
@@ -238,7 +238,7 @@ async def test_empty_resource_spans_returns_200(client):
 @pytest.mark.asyncio
 async def test_malformed_json_returns_200(client):
     resp = await client.post(
-        "/v1/traces",
+        "/otel/v1/traces",
         content=b"not-json",
         headers={"Content-Type": "application/json"},
     )
@@ -248,7 +248,7 @@ async def test_malformed_json_returns_200(client):
 
 @pytest.mark.asyncio
 async def test_non_dict_body_returns_200(client):
-    resp = await client.post("/v1/traces", json=["not", "a", "dict"])
+    resp = await client.post("/otel/v1/traces", json=["not", "a", "dict"])
     assert resp.status_code == 200
     assert resp.json() == {}
 
@@ -279,7 +279,7 @@ async def test_invalid_span_entries_skipped(client):
             }
         ]
     }
-    resp = await client.post("/v1/traces", json=payload)
+    resp = await client.post("/otel/v1/traces", json=payload)
     assert resp.status_code == 200
 
     db = await get_db()
@@ -309,7 +309,7 @@ async def test_span_query_endpoint(client):
             start_nano=str(1716883200000000000 + i * 1000000000),
             end_nano=str(1716883200000000000 + (i + 1) * 1000000000),
         )
-        resp = await client.post("/v1/traces", json=payload)
+        resp = await client.post("/otel/v1/traces", json=payload)
         assert resp.status_code == 200
 
     # Find the pipeline_run_id
@@ -379,7 +379,7 @@ async def test_multiple_spans_single_request(client):
             }
         ]
     }
-    resp = await client.post("/v1/traces", json=payload)
+    resp = await client.post("/otel/v1/traces", json=payload)
     assert resp.status_code == 200
 
     db = await get_db()
@@ -407,7 +407,7 @@ async def test_span_attributes_stored_as_json(client):
         span_id="span-attrs",
         attributes=attrs,
     )
-    resp = await client.post("/v1/traces", json=payload)
+    resp = await client.post("/otel/v1/traces", json=payload)
     assert resp.status_code == 200
 
     db = await get_db()
@@ -437,7 +437,7 @@ async def test_same_trace_reuses_pipeline_run(client):
             trace_id="trace-reuse",
             span_id=sid,
         )
-        await client.post("/v1/traces", json=payload)
+        await client.post("/otel/v1/traces", json=payload)
 
     db = await get_db()
     cursor = await db.execute(
@@ -467,7 +467,7 @@ async def test_no_summary_without_token_attrs(client):
             {"key": "custom.key", "value": {"stringValue": "value"}},
         ],
     )
-    await client.post("/v1/traces", json=payload)
+    await client.post("/otel/v1/traces", json=payload)
 
     db = await get_db()
     cursor = await db.execute("SELECT COUNT(*) FROM telemetry_summaries")

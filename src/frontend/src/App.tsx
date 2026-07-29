@@ -11,6 +11,9 @@ import ProvenanceDiff from "./pages/ProvenanceDiff";
 import Admin from "./pages/Admin";
 import Artifacts from "./pages/Artifacts";
 import Collector from "./pages/Collector";
+import Repositories from "./pages/Repositories";
+import Issues from "./pages/Issues";
+import IssueDetail from "./pages/IssueDetail";
 import Hallucinations from "./pages/Hallucinations";
 import TracesPage from "./pages/Traces";
 import OtelExplorer from "./pages/OtelExplorer";
@@ -40,6 +43,9 @@ function App() {
         <Route path="/knowledge-base" element={<KnowledgeBase />} />
         <Route path="/intelligence-settings" element={<IntelligenceSettings />} />
         <Route path="/collector" element={<Collector />} />
+        <Route path="/repositories" element={<Repositories />} />
+        <Route path="/issues" element={<Issues />} />
+        <Route path="/issues/:key" element={<IssueDetail />} />
         <Route path="/admin" element={<Admin />} />
       </Route>
     </Routes>
