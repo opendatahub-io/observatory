@@ -13,6 +13,7 @@ import backend.metrics  # noqa: F401 – register custom Prometheus metrics
 import backend.config
 import backend.database
 from backend.database import connect, disconnect, get_db, init_schema
+from backend.chat import stream_manager
 from backend.collector.scheduler import collector_loop
 from backend.repo_sync_scheduler import repo_sync_loop
 from backend.logging_handler import log_handler
@@ -68,6 +69,9 @@ async def lifespan(app: FastAPI):
             await t
         except asyncio.CancelledError:
             pass
+
+    # Cancel any in-flight chat generations so reloads/tests don't leak tasks.
+    await stream_manager.cancel_all_tasks()
 
     if backend.database._db is not None:
         await disconnect()

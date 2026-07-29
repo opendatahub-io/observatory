@@ -6,6 +6,8 @@ export interface StreamState {
   done: boolean;
 }
 
+type OnComplete = (blocks: MessageBlock[], content: string) => void;
+
 let blockCounter = 0;
 function nextBlockId(): string {
   return `stream-block-${++blockCounter}`;
@@ -16,18 +18,14 @@ export function useChatStream() {
   const [isStreaming, setIsStreaming] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
-  const startStream = useCallback(
-    async (
-      convId: number | string,
-      content: string,
-      onComplete: (blocks: MessageBlock[], content: string) => void,
-    ) => {
-      setIsStreaming(true);
-      setStreamState({ blocks: [], done: false });
-
-      const controller = new AbortController();
-      abortRef.current = controller;
-
+  /**
+   * Read an SSE response body to completion, rebuilding the block list as it
+   * goes. Shared by both the initial POST (startStream) and reconnects
+   * (attachStream) — a reconnect replays the whole buffer first, so building
+   * from scratch reconstructs the full in-progress message either way.
+   */
+  const consumeResponse = useCallback(
+    async (res: Response, onComplete: OnComplete) => {
       const blocks: MessageBlock[] = [];
       let pendingText = "";
       let currentEvent = "";
@@ -126,17 +124,7 @@ export function useChatStream() {
       };
 
       try {
-        const res = await fetch(
-          `/api/v1/chat/conversations/${convId}/messages`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ content }),
-            signal: controller.signal,
-          },
-        );
-
-        if (!res.ok || !res.body) {
+        if (!res.body) {
           setStreamState(null);
           setIsStreaming(false);
           return;
@@ -163,7 +151,8 @@ export function useChatStream() {
 
         if (buffer.trim()) processLine(buffer.trim());
 
-        // If no answer block was created (e.g. tool-only response or no message_end), finalize
+        // If no answer block was created (e.g. tool-only response or no
+        // message_end), finalize any trailing text.
         if (pendingText.trim()) {
           blocks.push({ id: nextBlockId(), type: "answer", text: pendingText.trim() });
           pendingText = "";
@@ -172,6 +161,8 @@ export function useChatStream() {
         const answerBlock = blocks.find((b) => b.type === "answer");
         onComplete(blocks, answerBlock?.text ?? "");
       } catch (err) {
+        // AbortError means the client tore down the reader (unmount / switch);
+        // the backend keeps generating and persists, so don't finalize here.
         if ((err as Error).name !== "AbortError") {
           setStreamState(null);
         }
@@ -184,9 +175,84 @@ export function useChatStream() {
     [],
   );
 
+  /**
+   * Re-attach to an in-flight generation for a conversation. Returns true if a
+   * live stream was found and consumed, false if the conversation is idle (204)
+   * or the request failed.
+   */
+  const attachStream = useCallback(
+    async (convId: number | string, onComplete: OnComplete): Promise<boolean> => {
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      let res: Response;
+      try {
+        res = await fetch(`/api/v1/chat/conversations/${convId}/stream`, {
+          signal: controller.signal,
+        });
+      } catch {
+        abortRef.current = null;
+        return false;
+      }
+
+      if (res.status === 204 || !res.ok || !res.body) {
+        abortRef.current = null;
+        return false;
+      }
+
+      setIsStreaming(true);
+      setStreamState({ blocks: [], done: false });
+      await consumeResponse(res, onComplete);
+      return true;
+    },
+    [consumeResponse],
+  );
+
+  const startStream = useCallback(
+    async (convId: number | string, content: string, onComplete: OnComplete) => {
+      setIsStreaming(true);
+      setStreamState({ blocks: [], done: false });
+
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      let res: Response;
+      try {
+        res = await fetch(`/api/v1/chat/conversations/${convId}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content }),
+          signal: controller.signal,
+        });
+      } catch (err) {
+        if ((err as Error).name !== "AbortError") setStreamState(null);
+        setIsStreaming(false);
+        abortRef.current = null;
+        return;
+      }
+
+      // A generation is already running (e.g. sent from another tab) — attach
+      // to it rather than starting a second.
+      if (res.status === 409) {
+        await attachStream(convId, onComplete);
+        return;
+      }
+
+      if (!res.ok || !res.body) {
+        setStreamState(null);
+        setIsStreaming(false);
+        abortRef.current = null;
+        return;
+      }
+
+      await consumeResponse(res, onComplete);
+    },
+    [consumeResponse, attachStream],
+  );
+
   const abort = useCallback(() => {
     abortRef.current?.abort();
   }, []);
 
-  return { streamState, isStreaming, startStream, abort };
+  return { streamState, isStreaming, startStream, attachStream, abort };
 }

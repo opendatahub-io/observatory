@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from typing import Optional
@@ -9,12 +10,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from backend.chat import stream_manager
 from backend.chat.agent import stream_chat_response
+from backend.chat.stream_manager import StreamSession
 from backend.config import settings
 from backend.crud import chat as chat_crud
 from backend.database import get_db
 
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
+
+_STREAM_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
 
 class CreateConversationRequest(BaseModel):
@@ -66,47 +71,44 @@ async def delete_conversation(
     return Response(status_code=204)
 
 
-@router.post("/conversations/{conversation_id}/messages")
-async def send_message(
+async def _run_generation(
+    session: StreamSession,
+    db: aiosqlite.Connection,
     conversation_id: str,
-    data: SendMessageRequest,
-    db: aiosqlite.Connection = Depends(get_db),
-):
-    if not settings.anthropic_api_key and not settings.anthropic_vertex_project_id:
-        raise HTTPException(
-            status_code=503,
-            detail="Chat is not configured: set OBSERVATORY_ANTHROPIC_API_KEY or OBSERVATORY_ANTHROPIC_VERTEX_PROJECT_ID",
-        )
+    messages: list[dict],
+    user_content: str,
+    conv_title: str | None,
+) -> None:
+    """Produce an assistant reply, publishing SSE events to ``session``.
 
-    conv = await chat_crud.get_conversation(db, conversation_id)
-    if not conv:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    Runs as an independent background task so it survives client disconnects.
+    Persistence happens in ``finally`` — before the session is removed — so a
+    client that missed the live stream can still load the saved answer.
+    """
+    msg_id = uuid.uuid4().hex
+    session.publish(
+        f"event: message_start\ndata: {json.dumps({'id': msg_id, 'role': 'assistant'})}\n\n"
+    )
 
-    await chat_crud.add_message(db, conversation_id, "user", data.content)
-    messages = await chat_crud.get_messages(db, conversation_id)
+    blocks: list[dict] = []
+    pending_text = ""
+    block_counter = 0
+    tool_call_id_map: dict[str, str] = {}
+    usage: dict = {}
 
-    async def event_stream():
-        msg_id = uuid.uuid4().hex
-        yield f"event: message_start\ndata: {json.dumps({'id': msg_id, 'role': 'assistant'})}\n\n"
+    def next_block_id() -> str:
+        nonlocal block_counter
+        block_counter += 1
+        return f"{msg_id}-block-{block_counter}"
 
-        blocks: list[dict] = []
+    def flush_activity():
+        nonlocal pending_text
+        text = pending_text.strip()
+        if text:
+            blocks.append({"id": next_block_id(), "type": "activity", "text": text})
         pending_text = ""
-        block_counter = 0
-        tool_call_id_map: dict[str, str] = {}
-        usage: dict = {}
 
-        def next_block_id() -> str:
-            nonlocal block_counter
-            block_counter += 1
-            return f"{msg_id}-block-{block_counter}"
-
-        def flush_activity():
-            nonlocal pending_text
-            text = pending_text.strip()
-            if text:
-                blocks.append({"id": next_block_id(), "type": "activity", "text": text})
-            pending_text = ""
-
+    try:
         try:
             async for event in stream_chat_response(db, messages):
                 evt_type = event["event"]
@@ -114,7 +116,7 @@ async def send_message(
 
                 if evt_type == "content_delta":
                     pending_text += evt_data.get("text", "")
-                    yield f"event: {evt_type}\ndata: {json.dumps(evt_data)}\n\n"
+                    session.publish(f"event: {evt_type}\ndata: {json.dumps(evt_data)}\n\n")
 
                 elif evt_type == "tool_use":
                     flush_activity()
@@ -130,7 +132,7 @@ async def send_message(
                         "status": "running",
                     })
                     enriched = {**evt_data, "tool_call_id": block_id}
-                    yield f"event: {evt_type}\ndata: {json.dumps(enriched)}\n\n"
+                    session.publish(f"event: {evt_type}\ndata: {json.dumps(enriched)}\n\n")
 
                 elif evt_type == "tool_result":
                     tool_name = evt_data["tool"]
@@ -142,7 +144,7 @@ async def send_message(
                             b["status"] = "failed" if is_error else "succeeded"
                             break
                     enriched = {**evt_data, "tool_call_id": block_id or ""}
-                    yield f"event: {evt_type}\ndata: {json.dumps(enriched)}\n\n"
+                    session.publish(f"event: {evt_type}\ndata: {json.dumps(enriched)}\n\n")
 
                 elif evt_type == "message_end":
                     usage = evt_data.get("usage", {})
@@ -150,13 +152,13 @@ async def send_message(
                     if text:
                         blocks.append({"id": next_block_id(), "type": "answer", "text": text})
                         pending_text = ""
-                    yield f"event: {evt_type}\ndata: {json.dumps(evt_data)}\n\n"
+                    session.publish(f"event: {evt_type}\ndata: {json.dumps(evt_data)}\n\n")
 
                 else:
-                    yield f"event: {evt_type}\ndata: {json.dumps(evt_data)}\n\n"
+                    session.publish(f"event: {evt_type}\ndata: {json.dumps(evt_data)}\n\n")
 
         except Exception as e:
-            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+            session.publish(f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n")
 
         remaining = pending_text.strip()
         if remaining:
@@ -178,14 +180,69 @@ async def send_message(
                 json.dumps(blocks, default=str),
             )
 
-        if not conv.get("title") and answer_text:
-            auto_title = data.content[:60].strip()
-            if len(data.content) > 60:
+        if not conv_title and answer_text:
+            auto_title = user_content[:60].strip()
+            if len(user_content) > 60:
                 auto_title += "..."
             await chat_crud.update_conversation_title(db, conversation_id, auto_title)
+    finally:
+        # Remove the session only after persistence, so a late reconnect that
+        # gets 204 (idle) can immediately load the saved answer instead.
+        stream_manager.remove_session(conversation_id)
+        session.finish()
+
+
+@router.post("/conversations/{conversation_id}/messages")
+async def send_message(
+    conversation_id: str,
+    data: SendMessageRequest,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    if not settings.anthropic_api_key and not settings.anthropic_vertex_project_id:
+        raise HTTPException(
+            status_code=503,
+            detail="Chat is not configured: set OBSERVATORY_ANTHROPIC_API_KEY or OBSERVATORY_ANTHROPIC_VERTEX_PROJECT_ID",
+        )
+
+    conv = await chat_crud.get_conversation(db, conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    if stream_manager.get_session(conversation_id) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="A response is already being generated for this conversation; attach to the existing stream instead.",
+        )
+
+    await chat_crud.add_message(db, conversation_id, "user", data.content)
+    messages = await chat_crud.get_messages(db, conversation_id)
+
+    session = stream_manager.register_session(conversation_id)
+    task = asyncio.create_task(
+        _run_generation(
+            session, db, conversation_id, messages, data.content, conv.get("title")
+        )
+    )
+    stream_manager.track_task(task)
 
     return StreamingResponse(
-        event_stream(),
+        session.subscribe(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers=_STREAM_HEADERS,
+    )
+
+
+@router.get("/conversations/{conversation_id}/stream")
+async def stream_conversation(
+    conversation_id: str,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Re-attach to an in-flight generation (replay + live), or 204 if idle."""
+    session = stream_manager.get_session(conversation_id)
+    if session is None:
+        return Response(status_code=204)
+    return StreamingResponse(
+        session.subscribe(),
+        media_type="text/event-stream",
+        headers=_STREAM_HEADERS,
     )

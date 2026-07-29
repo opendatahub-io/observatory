@@ -18,7 +18,7 @@ import { useChatStream } from "../hooks/useChatStream";
 /* ------------------------------------------------------------------ */
 
 interface Conversation {
-  id: number;
+  id: string;
   title: string | null;
   created_at: string;
   updated_at: string;
@@ -58,11 +58,15 @@ function legacyToolCallsToBlocks(
 
 const NARROW_BREAKPOINT = 640;
 
+/** localStorage key holding the last-active conversation id, so the chat
+ *  reopens (and re-attaches to any live generation) after refresh/navigation. */
+const ACTIVE_KEY = "observatory.activeConvId";
+
 function Chat() {
   /* --- Conversation list state --- */
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [convsLoading, setConvsLoading] = useState(true);
-  const [activeConvId, setActiveConvId] = useState<number | null>(null);
+  const [activeConvId, setActiveConvId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   /* --- Messages state --- */
@@ -80,7 +84,7 @@ function Chat() {
   const isNearBottomRef = useRef(true);
 
   /* --- Streaming hook --- */
-  const { streamState, isStreaming, startStream } = useChatStream();
+  const { streamState, isStreaming, startStream, attachStream, abort } = useChatStream();
 
   /* ================================================================ */
   /*  Responsive sidebar management                                    */
@@ -150,28 +154,65 @@ function Chat() {
     void fetchConversations();
   }, [fetchConversations]);
 
-  const loadConversation = useCallback(async (id: number) => {
-    setActiveConvId(id);
-    setMessagesLoading(true);
-    try {
-      const res = await fetch(`/api/v1/chat/conversations/${id}`);
-      if (res.ok) {
-        const data = await res.json();
-        setMessages(data.messages ?? []);
+  const loadConversation = useCallback(
+    async (id: string) => {
+      // Tear down any reader from the previously-viewed conversation (the
+      // backend keeps generating and persists on its own).
+      abort();
+      setActiveConvId(id);
+      localStorage.setItem(ACTIVE_KEY, id);
+      setMessagesLoading(true);
+      try {
+        const res = await fetch(`/api/v1/chat/conversations/${id}`);
+        if (res.ok) {
+          const data = await res.json();
+          setMessages(data.messages ?? []);
+        }
+      } catch {
+        /* ignore */
+      } finally {
+        setMessagesLoading(false);
       }
-    } catch {
-      /* ignore */
-    } finally {
-      setMessagesLoading(false);
-    }
+
+      // Re-attach to a generation that is still running for this conversation.
+      void attachStream(id, (blocks, answerContent) => {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now() + 1,
+            role: "assistant" as const,
+            content: answerContent,
+            blocks,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+        void fetchConversations();
+      });
+    },
+    [abort, attachStream, fetchConversations],
+  );
+
+  /* ================================================================ */
+  /*  Restore active conversation across refresh / navigation          */
+  /* ================================================================ */
+
+  useEffect(() => {
+    const saved = localStorage.getItem(ACTIVE_KEY);
+    if (saved) void loadConversation(saved);
+    // Run once on mount; loadConversation is stable enough for this purpose.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // On unmount (route change), stop reading the stream. The backend generation
+  // continues independently and persists its result.
+  useEffect(() => () => abort(), [abort]);
 
   /* ================================================================ */
   /*  Conversation CRUD                                                */
   /* ================================================================ */
 
   const createConversation = useCallback(
-    async (title?: string): Promise<number | null> => {
+    async (title?: string): Promise<string | null> => {
       try {
         const res = await fetch("/api/v1/chat/conversations", {
           method: "POST",
@@ -182,6 +223,7 @@ function Chat() {
           const conv: Conversation = await res.json();
           setConversations((prev) => [conv, ...prev]);
           setActiveConvId(conv.id);
+          localStorage.setItem(ACTIVE_KEY, conv.id);
           setMessages([]);
           return conv.id;
         }
@@ -194,20 +236,22 @@ function Chat() {
   );
 
   const deleteConversation = useCallback(
-    async (id: number) => {
+    async (id: string) => {
       if (!confirm("Delete this conversation?")) return;
       try {
         await fetch(`/api/v1/chat/conversations/${id}`, { method: "DELETE" });
         setConversations((prev) => prev.filter((c) => c.id !== id));
         if (activeConvId === id) {
+          abort();
           setActiveConvId(null);
           setMessages([]);
+          localStorage.removeItem(ACTIVE_KEY);
         }
       } catch {
         /* ignore */
       }
     },
-    [activeConvId],
+    [activeConvId, abort],
   );
 
   /* ================================================================ */
@@ -335,8 +379,10 @@ function Chat() {
                 className="p-1.5 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 transition-colors"
                 title="New chat"
                 onClick={() => {
+                  abort();
                   setActiveConvId(null);
                   setMessages([]);
+                  localStorage.removeItem(ACTIVE_KEY);
                 }}
               >
                 <Plus className="w-4 h-4" />
