@@ -229,6 +229,12 @@ async def create_artifact_config(
     )
     await db.commit()
     rid = cursor.lastrowid
+    results_repo = data.get("results_repo")
+    if results_repo:
+        repo_id = await upsert_repository(db, results_repo, "results")
+        if repo_id is not None:
+            await link_repository(db, pipeline_id, repo_id, "results")
+            await db.commit()
     cur2 = await db.execute("SELECT * FROM pipeline_artifact_config WHERE id = ?", (rid,))
     return dict(await cur2.fetchone())
 

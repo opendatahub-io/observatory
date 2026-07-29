@@ -131,6 +131,42 @@ async def test_backfill_dedupes_shared_repo(repo_db):
     assert (await cursor.fetchone())["c"] == 2
 
 
+@pytest.mark.asyncio
+async def test_backfill_registers_artifact_results_repo(repo_db):
+    """A pipeline's artifact/results repo is registered with kind='results' and
+    linked with relation='results', so it appears on the Repositories page and
+    is picked up by the sync loop."""
+    from backend.database import _backfill_repositories
+
+    await repo_db.execute(
+        "INSERT INTO pipelines (name, slug, platform, repo_url) VALUES (?,?,?,?)",
+        ("P1", "p1", "gitlab", "https://gitlab.com/acme/p1"),
+    )
+    await repo_db.commit()
+    await repo_db.execute(
+        "INSERT INTO pipeline_artifact_config (pipeline_id, results_repo, status) "
+        "VALUES (?,?,?)",
+        (1, "https://gitlab.com/acme/results-repo", "active"),
+    )
+    await repo_db.commit()
+
+    await _backfill_repositories(repo_db)
+    await _backfill_repositories(repo_db)  # idempotent
+
+    cursor = await repo_db.execute(
+        "SELECT kind FROM repositories WHERE name = 'results-repo'")
+    rows = await cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "results"
+
+    cursor = await repo_db.execute(
+        "SELECT l.relation FROM pipeline_repository_links l "
+        "JOIN repositories r ON r.id = l.repository_id WHERE r.name = 'results-repo'")
+    rows = await cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0]["relation"] == "results"
+
+
 # ---------------------------------------------------------------------------
 # 2. Credential leak regression
 # ---------------------------------------------------------------------------

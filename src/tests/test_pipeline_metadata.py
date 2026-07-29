@@ -212,3 +212,11 @@ async def test_artifact_config_crud(client):
 
     resp = await client.get("/api/pipelines/meta-test/artifact-config")
     assert len(resp.json()) == 1
+
+    # The results repo is auto-registered in the repository registry (kind
+    # 'results') so it shows on the Repositories page and gets synced.
+    resp = await client.get("/api/v1/repositories")
+    assert resp.status_code == 200
+    results_repos = [r for r in resp.json() if r["name"] == "results"]
+    assert len(results_repos) == 1
+    assert results_repos[0]["kind"] == "results"

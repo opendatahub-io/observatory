@@ -874,7 +874,8 @@ CREATE INDEX IF NOT EXISTS idx_data_sources_type ON data_sources(source_type);
 CREATE INDEX IF NOT EXISTS idx_data_sources_status ON data_sources(status);
 
 -- Repository registry: normalizes repo references from pipelines.repo_url,
--- pipeline_skills.repo_url, and pipeline_shared_libs.repo_url into one entity
+-- pipeline_skills.repo_url, pipeline_shared_libs.repo_url, and
+-- pipeline_artifact_config.results_repo into one entity
 -- keyed by (domain, owner, name) so a repo referenced from many places dedupes
 -- to a single row. Derived/synced index for checkout management + chat tools;
 -- the existing repo_url columns remain the source of truth for pipeline CRUD.
@@ -1363,6 +1364,16 @@ async def _backfill_repositories(db: aiosqlite.Connection) -> None:
             await link_repository(
                 db, row["pipeline_id"], repo_id, "shared_lib", purpose=row["purpose"]
             )
+
+    # Artifact/results repos.
+    cursor = await db.execute(
+        """SELECT pipeline_id, results_repo FROM pipeline_artifact_config
+           WHERE results_repo IS NOT NULL AND results_repo != ''"""
+    )
+    for row in await cursor.fetchall():
+        repo_id = await upsert_repository(db, row["results_repo"], "results")
+        if repo_id is not None:
+            await link_repository(db, row["pipeline_id"], repo_id, "results")
 
     await db.commit()
 
