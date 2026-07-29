@@ -289,12 +289,12 @@ TOOL_DEFINITIONS: list[dict] = [
     },
     {
         "name": "query_jira",
-        "description": "Query the live, authenticated Jira instance using JQL. Returns issue keys, summaries, statuses, types, priorities, and an approximate total. Use this to answer questions about Jira tickets, counts, and project contents. NOTE: the JQL must be bounded (include a project, key, filter, or date restriction) — a bare 'ORDER BY ...' is rejected by Jira Cloud.",
+        "description": "Query the live, authenticated Jira instance using JQL. Returns the requested `fields` per issue plus an approximate total. Use this to answer questions about Jira tickets, counts, and project contents. Any Jira field can be requested via `fields` — e.g. description, labels, updated, assignee, reporter, comment — not just the defaults; rich-text fields (description, comment bodies) are flattened to plain text. NOTE: the JQL must be bounded (include a project, key, filter, or date restriction) — a bare 'ORDER BY ...' is rejected by Jira Cloud.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "jql": {"type": "string", "description": "Bounded JQL query (e.g. 'project = RHAIRFE ORDER BY created DESC', 'key = RHOAIENG-123', 'assignee = currentUser() AND status != Done')"},
-                "fields": {"type": "string", "description": "Comma-separated fields to return (default: key,summary,status,issuetype,priority,created)", "default": "key,summary,status,issuetype,priority,created"},
+                "fields": {"type": "string", "description": "Comma-separated Jira fields to return (default: key,summary,status,issuetype,priority,created). Add others as needed, e.g. 'key,summary,description,labels,updated,assignee,comment'.", "default": "key,summary,status,issuetype,priority,created"},
                 "max_results": {"type": "integer", "description": "Max issues to return (max 50)", "default": 20},
             },
             "required": ["jql"],
@@ -1528,6 +1528,75 @@ def _jira_scrub(text: str, token: str | None) -> str:
     return text
 
 
+# Block-level ADF nodes that should be followed by a newline when flattened.
+_ADF_BLOCK_TYPES = {
+    "paragraph", "heading", "listItem", "blockquote", "codeBlock", "rule",
+}
+
+
+def _adf_to_text(node) -> str:
+    """Flatten Atlassian Document Format (Jira Cloud rich text) to plain text.
+
+    Jira Server/Data Center returns plain strings for description/comment bodies;
+    Jira Cloud returns an ADF document (nested dicts). Plain strings pass through.
+    """
+    if node is None:
+        return ""
+    if isinstance(node, str):
+        return node
+    if isinstance(node, list):
+        return "".join(_adf_to_text(n) for n in node)
+    if isinstance(node, dict):
+        node_type = node.get("type")
+        if node_type == "text":
+            return node.get("text", "")
+        if node_type == "hardBreak":
+            return "\n"
+        text = _adf_to_text(node.get("content"))
+        if node_type in _ADF_BLOCK_TYPES:
+            text += "\n"
+        return text
+    return str(node)
+
+
+def _jira_normalize_comment(comment) -> dict:
+    """Reduce a Jira comment object to author / timestamps / plain-text body."""
+    if not isinstance(comment, dict):
+        return comment
+    author = comment.get("author")
+    return {
+        "author": author.get("displayName") if isinstance(author, dict) else author,
+        "created": comment.get("created"),
+        "updated": comment.get("updated"),
+        "body": _adf_to_text(comment.get("body")).strip(),
+    }
+
+
+def _jira_normalize_field(value):
+    """Normalize a raw Jira field value into something readable for the model.
+
+    - Named entities (status, issuetype, priority, resolution, project) → name
+    - People (assignee, reporter, creator) → displayName
+    - Rich text (description, ADF docs) → flattened plain text
+    - Comment containers → a list of {author, created, updated, body}
+    - Lists (labels, components, etc.) → element-wise normalized
+    - Everything else (timestamps, plain strings, numbers) → passed through
+    """
+    if isinstance(value, dict):
+        if value.get("type") == "doc":  # ADF rich-text document
+            return _adf_to_text(value).strip()
+        comments = value.get("comments")
+        if isinstance(comments, list):  # {comment: {comments: [...]}} container
+            return [_jira_normalize_comment(c) for c in comments]
+        for key in ("name", "displayName", "value"):
+            if key in value:
+                return value[key]
+        return value
+    if isinstance(value, list):
+        return [_jira_normalize_field(v) for v in value]
+    return value
+
+
 async def _handle_query_jira(db: aiosqlite.Connection, input: dict) -> dict:
     """Query the configured Jira instance via JQL.
 
@@ -1616,17 +1685,19 @@ async def _handle_query_jira(db: aiosqlite.Connection, input: dict) -> dict:
     except Exception as e:
         return {"error": _jira_scrub(f"Failed to reach Jira at {endpoint}: {e}", token)}
 
+    # Honor whatever fields were requested (default or caller-supplied) rather
+    # than a fixed set — Jira was already asked for them via the `fields` param,
+    # so return each one, normalized from its raw object/rich-text shape.
+    requested = [name.strip() for name in fields.split(",") if name.strip()]
     issues = []
     for issue in data.get("issues", []):
         f = issue.get("fields", {})
-        issues.append({
-            "key": issue["key"],
-            "summary": f.get("summary"),
-            "status": f.get("status", {}).get("name") if isinstance(f.get("status"), dict) else f.get("status"),
-            "issuetype": f.get("issuetype", {}).get("name") if isinstance(f.get("issuetype"), dict) else f.get("issuetype"),
-            "priority": f.get("priority", {}).get("name") if isinstance(f.get("priority"), dict) else f.get("priority"),
-            "created": f.get("created"),
-        })
+        item = {"key": issue["key"]}
+        for name in requested:
+            if name == "key":
+                continue
+            item[name] = _jira_normalize_field(f.get(name))
+        issues.append(item)
 
     result = {"issues": issues, "count": len(issues), "total": approx_total}
     if is_cloud and not data.get("isLast", True):

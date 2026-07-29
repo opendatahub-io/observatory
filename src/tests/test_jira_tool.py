@@ -157,6 +157,75 @@ async def test_token_is_scrubbed_from_errors(db, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_requested_fields_are_returned_and_normalized(db, monkeypatch):
+    """Requesting fields beyond the defaults returns them, with Jira's object /
+    ADF shapes flattened to readable values."""
+    rich_issue = {
+        "key": "RHOAIENG-9",
+        "fields": {
+            "summary": "Rich issue",
+            "labels": ["backend", "urgent"],
+            "updated": "2026-02-02T10:00:00.000+0000",
+            "assignee": {"displayName": "Ada Lovelace", "emailAddress": "ada@x.com"},
+            "description": {
+                "type": "doc",
+                "content": [
+                    {"type": "paragraph", "content": [{"type": "text", "text": "First line."}]},
+                    {"type": "paragraph", "content": [{"type": "text", "text": "Second line."}]},
+                ],
+            },
+            "comment": {
+                "comments": [
+                    {
+                        "author": {"displayName": "Grace Hopper"},
+                        "created": "2026-02-01T00:00:00.000+0000",
+                        "body": {
+                            "type": "doc",
+                            "content": [
+                                {"type": "paragraph", "content": [{"type": "text", "text": "Looks good."}]},
+                            ],
+                        },
+                    }
+                ]
+            },
+        },
+    }
+    _set_settings(monkeypatch, url="https://acme.atlassian.net", email="me@acme.com", token="SECRET")
+    captured: list[httpx.Request] = []
+    _install_mock(monkeypatch, _make_handler(captured, issues=[rich_issue], count=1))
+
+    res = await tools._handle_query_jira(
+        db,
+        {
+            "jql": "key = RHOAIENG-9",
+            "fields": "key,summary,description,labels,updated,assignee,comment",
+        },
+    )
+
+    assert "error" not in res
+    issue = res["issues"][0]
+    assert issue["key"] == "RHOAIENG-9"
+    assert issue["summary"] == "Rich issue"
+    assert issue["labels"] == ["backend", "urgent"]
+    assert issue["updated"] == "2026-02-02T10:00:00.000+0000"
+    assert issue["assignee"] == "Ada Lovelace"
+    assert issue["description"] == "First line.\nSecond line."
+    assert issue["comment"] == [
+        {
+            "author": "Grace Hopper",
+            "created": "2026-02-01T00:00:00.000+0000",
+            "updated": None,
+            "body": "Looks good.",
+        }
+    ]
+
+    # The requested fields must actually be forwarded to Jira.
+    search = [r for r in captured if r.url.path.endswith("/search/jql")][0]
+    assert "description" in search.url.params["fields"]
+    assert "comment" in search.url.params["fields"]
+
+
+@pytest.mark.anyio
 async def test_data_source_endpoint_overrides_env_url(db, monkeypatch):
     """A Jira data-source row's endpoint takes precedence over settings.jira_url."""
     from backend.crud import data_sources as ds_crud
