@@ -223,9 +223,22 @@ async def stream_chat_response(
                     "preview": result_str[:MAX_TOOL_RESULT_CHARS],
                 })
             result_data = json.loads(result_str)
-            yield {"event": "tool_result", "data": {"tool": block.name, "result": result_data}}
+            # A tool that returns an {"error": ...} object failed. Signal that
+            # both to the UI (so the block renders as failed instead of a green
+            # check) and to the model via the Anthropic tool_result protocol, so
+            # it can course-correct rather than retry a call it thinks worked.
+            is_error = isinstance(result_data, dict) and "error" in result_data
+            yield {
+                "event": "tool_result",
+                "data": {"tool": block.name, "result": result_data, "is_error": is_error},
+            }
             tool_results.append(
-                {"type": "tool_result", "tool_use_id": block.id, "content": result_str}
+                {
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result_str,
+                    "is_error": is_error,
+                }
             )
 
         api_messages.append({"role": "user", "content": tool_results})
