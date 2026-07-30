@@ -16,6 +16,15 @@ interface Pipeline {
   expected_interval_minutes: number | null;
   timeout_minutes: number | null;
   status: string;
+  group: string | null;
+  display_order: number | null;
+}
+
+interface ArtifactConfig {
+  id: number;
+  pipeline_id: number;
+  results_repo: string | null;
+  status: string;
 }
 
 interface PipelineFormData {
@@ -29,6 +38,8 @@ interface PipelineFormData {
   expected_interval_minutes: string;
   timeout_minutes: string;
   status: string;
+  group: string;
+  display_order: string;
 }
 
 interface DbHealth {
@@ -127,6 +138,8 @@ const EMPTY_FORM: PipelineFormData = {
   expected_interval_minutes: "",
   timeout_minutes: "",
   status: "production",
+  group: "",
+  display_order: "",
 };
 
 /* ------------------------------------------------------------------ */
@@ -135,10 +148,10 @@ const EMPTY_FORM: PipelineFormData = {
 
 const tw = {
   btn: "text-sm font-medium px-4 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all cursor-pointer",
-  btnPrimary: "bg-primary-600 text-white border-primary-600 hover:bg-primary-700",
-  btnDanger: "bg-red-600 text-white border-red-600 hover:bg-red-700",
+  btnPrimary: "!bg-primary-600 !text-white !border-primary-600 hover:!bg-primary-700",
+  btnDanger: "!bg-red-600 !text-white !border-red-600 hover:!bg-red-700",
   btnSmall: "text-xs font-medium px-2.5 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer transition-all",
-  btnTest: "bg-amber-500 text-white border-amber-500 hover:bg-amber-600",
+  btnTest: "!bg-amber-500 !text-white !border-amber-500 hover:!bg-amber-600",
   table: "w-full text-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden",
   th: "text-left px-4 py-3 font-semibold text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700",
   td: "px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-gray-900 dark:text-gray-100",
@@ -246,6 +259,8 @@ function Admin() {
   const [showForm, setShowForm] = useState(false);
   const [editingSlug, setEditingSlug] = useState<string | null>(null);
   const [formData, setFormData] = useState<PipelineFormData>(EMPTY_FORM);
+  const [artifactConfigs, setArtifactConfigs] = useState<ArtifactConfig[]>([]);
+  const [newArtifactRepo, setNewArtifactRepo] = useState("");
 
   const pipelineMsgTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -416,6 +431,8 @@ function Admin() {
     setFormData(EMPTY_FORM);
     setEditingSlug(null);
     setShowForm(false);
+    setArtifactConfigs([]);
+    setNewArtifactRepo("");
   };
 
   const handleFormChange = (field: keyof PipelineFormData, value: string) => {
@@ -425,7 +442,55 @@ function Admin() {
   const handleAddClick = () => {
     setFormData(EMPTY_FORM);
     setEditingSlug(null);
+    setArtifactConfigs([]);
+    setNewArtifactRepo("");
     setShowForm(true);
+  };
+
+  const fetchArtifactConfigs = async (slug: string) => {
+    try {
+      const res = await fetch(`/api/pipelines/${encodeURIComponent(slug)}/artifact-config`);
+      if (res.ok) {
+        setArtifactConfigs(await res.json() as ArtifactConfig[]);
+      }
+    } catch { /* ignore */ }
+  };
+
+  const handleAddArtifactRepo = async () => {
+    if (!editingSlug || !newArtifactRepo.trim()) return;
+    try {
+      const res = await fetch(`/api/pipelines/${encodeURIComponent(editingSlug)}/artifact-config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ results_repo: newArtifactRepo.trim() }),
+      });
+      if (res.ok || res.status === 201) {
+        setNewArtifactRepo("");
+        void fetchArtifactConfigs(editingSlug);
+        showPipelineMsg("success", "Artifact repo added.");
+      } else {
+        showPipelineMsg("error", `Failed to add artifact repo (${res.status})`);
+      }
+    } catch {
+      showPipelineMsg("error", "Failed to add artifact repo (network error)");
+    }
+  };
+
+  const handleDeleteArtifactRepo = async (id: number) => {
+    if (!editingSlug) return;
+    try {
+      const res = await fetch(`/api/pipelines/${encodeURIComponent(editingSlug)}/artifact-config/${id}`, {
+        method: "DELETE",
+      });
+      if (res.status === 204 || res.ok) {
+        void fetchArtifactConfigs(editingSlug);
+        showPipelineMsg("success", "Artifact repo removed.");
+      } else {
+        showPipelineMsg("error", `Failed to remove artifact repo (${res.status})`);
+      }
+    } catch {
+      showPipelineMsg("error", "Failed to remove artifact repo (network error)");
+    }
   };
 
   const handleEditClick = (p: Pipeline) => {
@@ -440,8 +505,12 @@ function Admin() {
       expected_interval_minutes: p.expected_interval_minutes?.toString() ?? "",
       timeout_minutes: p.timeout_minutes?.toString() ?? "",
       status: p.status ?? "production",
+      group: p.group ?? "",
+      display_order: p.display_order?.toString() ?? "",
     });
     setEditingSlug(p.slug);
+    setNewArtifactRepo("");
+    void fetchArtifactConfigs(p.slug);
     setShowForm(true);
   };
 
@@ -477,6 +546,9 @@ function Admin() {
     if (formData.timeout_minutes)
       body.timeout_minutes = parseInt(formData.timeout_minutes, 10);
     if (formData.status) body.status = formData.status;
+    if (formData.group) body.group = formData.group;
+    if (formData.display_order)
+      body.display_order = parseInt(formData.display_order, 10);
 
     try {
       let res: Response;
@@ -918,7 +990,76 @@ function Admin() {
                   <option value="deprecated">deprecated</option>
                 </select>
               </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs font-medium text-gray-700 dark:text-gray-300">Group</span>
+                <input
+                  type="text"
+                  className={tw.formInput}
+                  value={formData.group}
+                  onChange={(e) => handleFormChange("group", e.target.value)}
+                  placeholder="e.g. Model Serving"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs font-medium text-gray-700 dark:text-gray-300">Display Order</span>
+                <input
+                  type="number"
+                  className={tw.formInput}
+                  value={formData.display_order}
+                  onChange={(e) => handleFormChange("display_order", e.target.value)}
+                  placeholder="0"
+                />
+              </label>
             </div>
+
+            {/* Artifact Repositories sub-section */}
+            <div className="mt-4 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+              <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Artifact Repositories</h4>
+              {editingSlug ? (
+                <>
+                  {artifactConfigs.length > 0 ? (
+                    <ul className="space-y-2 mb-3">
+                      {artifactConfigs.map((ac) => (
+                        <li key={ac.id} className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                          <code className="flex-1 truncate text-xs bg-gray-50 dark:bg-gray-900 px-2 py-1 rounded">{ac.results_repo}</code>
+                          <span className="text-xs text-gray-400">{ac.status}</span>
+                          <button
+                            type="button"
+                            className={`${tw.btnSmall} ${tw.btnDanger}`}
+                            onClick={() => void handleDeleteArtifactRepo(ac.id)}
+                          >
+                            Remove
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-xs text-gray-400 dark:text-gray-500 mb-3">No artifact repositories configured.</p>
+                  )}
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      className={`${tw.formInput} flex-1`}
+                      value={newArtifactRepo}
+                      onChange={(e) => setNewArtifactRepo(e.target.value)}
+                      placeholder="https://gitlab.example.com/org/results-repo"
+                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void handleAddArtifactRepo(); } }}
+                    />
+                    <button
+                      type="button"
+                      className={`${tw.btn} ${tw.btnPrimary}`}
+                      onClick={() => void handleAddArtifactRepo()}
+                      disabled={!newArtifactRepo.trim()}
+                    >
+                      Add
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <p className="text-xs text-gray-400 dark:text-gray-500">Save the pipeline first, then edit to add artifact repositories.</p>
+              )}
+            </div>
+
             <div className="flex gap-3 mt-4">
               <button type="submit" className={`${tw.btn} ${tw.btnPrimary}`}>
                 {editingSlug ? "Update Pipeline" : "Create Pipeline"}
@@ -949,6 +1090,7 @@ function Admin() {
                 <th className={tw.th}>Platform</th>
                 <th className={tw.th}>Owner</th>
                 <th className={tw.th}>Status</th>
+                <th className={tw.th}>Group</th>
                 <th className={tw.th}>Actions</th>
               </tr>
             </thead>
@@ -964,6 +1106,7 @@ function Admin() {
                       {p.status}
                     </span>
                   </td>
+                  <td className={tw.td}>{p.group ?? "-"}</td>
                   <td className={tw.td}>
                     <div className="flex gap-1.5">
                       <button

@@ -203,7 +203,7 @@ class GitLabCollector(PlatformCollector):
         jobs_list = jobs_list or []
         patterns_list = patterns_list or []
 
-        max_pages = 3 if filtering else 1
+        max_pages = 1
         pipelines_data: list[dict] = []
 
         for page in range(1, max_pages + 1):
@@ -259,48 +259,53 @@ class GitLabCollector(PlatformCollector):
                 created_at = p.get("created_at")
                 updated_at = p.get("updated_at")
 
-                matched_job_name: str | None = None
-
-                job_started_at: str | None = None
-                job_finished_at: str | None = None
-
                 if filtering:
-                    matched_job = await self._check_pipeline_jobs(
+                    matched_jobs = await self._check_pipeline_jobs(
                         client, project_id, pipeline_id,
                         jobs_list, patterns_list,
                     )
-                    if matched_job is None:
+                    if not matched_jobs:
                         skipped_count += 1
                         continue
-                    matched_job_name = matched_job["name"]
-                    job_status = matched_job["status"]
-                    mapped_status = _STATUS_MAP.get(job_status, mapped_status)
-                    job_started_at = matched_job.get("started_at")
-                    job_finished_at = matched_job.get("finished_at")
-                elif mapped_status == "running":
-                    resolved = await self._resolve_pipeline_status_from_detail(
-                        client, project_id, pipeline_id,
+                    for mj in matched_jobs:
+                        job_status = _STATUS_MAP.get(mj["status"], mapped_status)
+                        job_started = mj.get("started_at") or created_at
+                        job_finished = mj.get("finished_at") or (
+                            updated_at if job_status in ("success", "failed", "canceled") else None
+                        )
+                        runs.append({
+                            "external_id": f"{pipeline_id}-{mj['name']}",
+                            "job": mj["name"],
+                            "queued_at": created_at,
+                            "started_at": job_started,
+                            "finished_at": job_finished,
+                            "duration_seconds": _compute_duration(job_started, job_finished),
+                            "status": job_status,
+                            "ref": p.get("ref"),
+                            "web_url": p.get("web_url"),
+                        })
+                else:
+                    if mapped_status == "running":
+                        resolved = await self._resolve_pipeline_status_from_detail(
+                            client, project_id, pipeline_id,
+                        )
+                        if resolved:
+                            mapped_status = resolved
+
+                    effective_finished = (
+                        updated_at if mapped_status in ("success", "failed", "canceled") else None
                     )
-                    if resolved:
-                        mapped_status = resolved
-
-                effective_started = job_started_at or created_at
-                effective_finished = job_finished_at or (
-                    updated_at if mapped_status in ("success", "failed", "canceled") else None
-                )
-
-                run = {
-                    "external_id": str(pipeline_id),
-                    "job": matched_job_name,
-                    "queued_at": created_at,
-                    "started_at": effective_started,
-                    "finished_at": effective_finished,
-                    "duration_seconds": _compute_duration(effective_started, effective_finished),
-                    "status": mapped_status,
-                    "ref": p.get("ref"),
-                    "web_url": p.get("web_url"),
-                }
-                runs.append(run)
+                    runs.append({
+                        "external_id": str(pipeline_id),
+                        "job": p.get("source") or None,
+                        "queued_at": created_at,
+                        "started_at": created_at,
+                        "finished_at": effective_finished,
+                        "duration_seconds": _compute_duration(created_at, effective_finished),
+                        "status": mapped_status,
+                        "ref": p.get("ref"),
+                        "web_url": p.get("web_url"),
+                    })
             except (KeyError, TypeError) as exc:
                 logger.warning("Skipping malformed pipeline entry: %s — %s", exc, p)
 
@@ -325,11 +330,12 @@ class GitLabCollector(PlatformCollector):
         pipeline_id: int,
         jobs_list: list[str],
         patterns_list: list[str],
-    ) -> dict | None:
-        """Fetch jobs for a CI pipeline and return the first matched job dict, or None.
+    ) -> list[dict]:
+        """Fetch jobs for a CI pipeline and return all matched job dicts.
 
-        The returned dict has keys ``name`` and ``status`` so callers can use
-        the job-level status instead of the parent pipeline status.
+        Each returned dict has keys ``name``, ``status``, ``started_at``,
+        and ``finished_at`` so callers can use job-level timing and status.
+        Returns an empty list when no jobs match or on error.
         """
         logger.debug(
             "Checking jobs for pipeline %s against filters: jobs=%s, patterns=%s",
@@ -346,13 +352,13 @@ class GitLabCollector(PlatformCollector):
                     "Failed to fetch jobs for pipeline %s: HTTP %d",
                     pipeline_id, resp.status_code,
                 )
-                return None
+                return []
 
             jobs_data = resp.json()
             if not isinstance(jobs_data, list):
-                return None
+                return []
 
-            job_names = [j.get("name", "") for j in jobs_data]
+            matched: list[dict] = []
             for job in jobs_data:
                 name = job.get("name", "")
                 if matches_job_filter(name, jobs_list, patterns_list):
@@ -360,23 +366,28 @@ class GitLabCollector(PlatformCollector):
                         "Pipeline %s matched job filter via job %r (status=%s)",
                         pipeline_id, name, job.get("status"),
                     )
-                    return {
+                    matched.append({
                         "name": name,
                         "status": job.get("status", "unknown"),
                         "started_at": job.get("started_at"),
                         "finished_at": job.get("finished_at"),
-                    }
+                    })
 
-            logger.debug(
-                "Pipeline %s: no jobs matched filters. Job names: %s",
-                pipeline_id, job_names,
-            )
+            if not matched:
+                job_names = [j.get("name", "") for j in jobs_data]
+                logger.debug(
+                    "Pipeline %s: no jobs matched filters. Job names: %s",
+                    pipeline_id, job_names,
+                )
+
+            return matched
 
         except httpx.HTTPError as exc:
             logger.warning(
                 "HTTP error fetching jobs for pipeline %s: %s",
                 pipeline_id, exc,
             )
+            return []
 
         return None
 
@@ -429,11 +440,20 @@ class GitLabCollector(PlatformCollector):
 
     async def _check_rate_limit(self, resp: httpx.Response) -> None:
         """If the GitLab rate-limit remaining is low, sleep briefly."""
+        if resp.status_code == 429:
+            retry_after = int(resp.headers.get("Retry-After", "60"))
+            logger.warning(
+                "GitLab rate limit hit (429), sleeping %ds",
+                retry_after,
+            )
+            await asyncio.sleep(retry_after)
+            return
+
         remaining = resp.headers.get("RateLimit-Remaining")
         if remaining is not None:
             try:
                 remaining_int = int(remaining)
-                if remaining_int < 5:
+                if remaining_int < 10:
                     logger.warning(
                         "GitLab rate limit nearly exhausted (%d remaining), sleeping 10s",
                         remaining_int,

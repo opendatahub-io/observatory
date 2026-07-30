@@ -277,6 +277,8 @@ function PipelineDetail() {
   const [runsTotal, setRunsTotal] = useState(0);
   const [runsPage, setRunsPage] = useState(1);
   const [runsLoading, setRunsLoading] = useState(false);
+  const [runsSortBy, setRunsSortBy] = useState("started_at");
+  const [runsSortDir, setRunsSortDir] = useState<"asc" | "desc">("desc");
 
   const [artifacts, setArtifacts] = useState<ArtifactFile[]>([]);
   const [, setArtifactsLoading] = useState(false);
@@ -339,7 +341,7 @@ function PipelineDetail() {
       setRunsLoading(true);
       try {
         const res = await fetch(
-          `/api/pipelines/${encodeURIComponent(slug!)}/runs?page=${runsPage}&per_page=${PER_PAGE}`
+          `/api/pipelines/${encodeURIComponent(slug!)}/runs?page=${runsPage}&per_page=${PER_PAGE}&sort_by=${runsSortBy}&sort_dir=${runsSortDir}`
         );
         if (res.ok) {
           const data: RunsResponse = await res.json();
@@ -360,7 +362,7 @@ function PipelineDetail() {
     return () => {
       cancelled = true;
     };
-  }, [slug, runsPage]);
+  }, [slug, runsPage, runsSortBy, runsSortDir]);
 
   /* Fetch artifacts for the latest run */
   const fetchArtifacts = useCallback(async () => {
@@ -605,19 +607,35 @@ function PipelineDetail() {
         )}
 
         {/* Runs table */}
-        {runs.length > 0 && (
+        {runs.length > 0 && (() => {
+          const thBase = "text-left px-4 py-3 font-semibold text-xs uppercase tracking-wider bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700";
+          const thSortable = `${thBase} cursor-pointer select-none hover:text-gray-700 dark:hover:text-gray-200`;
+          const sortArrow = (col: string) =>
+            runsSortBy === col ? (runsSortDir === "asc" ? " ▲" : " ▼") : "";
+          const toggleSort = (col: string) => {
+            setRunsPage(1);
+            if (runsSortBy === col) {
+              setRunsSortDir((d) => (d === "asc" ? "desc" : "asc"));
+            } else {
+              setRunsSortBy(col);
+              setRunsSortDir(col === "duration_seconds" ? "desc" : "desc");
+            }
+          };
+
+          return (
           <>
             <table className="w-full text-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
               <thead>
                 <tr>
-                  <th className="text-left px-4 py-3 font-semibold text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">Status</th>
-                  <th className="text-left px-4 py-3 font-semibold text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">Started</th>
-                  <th className="text-left px-4 py-3 font-semibold text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">Duration</th>
-                  <th className="text-left px-4 py-3 font-semibold text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">Queued</th>
-                  <th className="text-left px-4 py-3 font-semibold text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">Ref</th>
-                  <th className="text-left px-4 py-3 font-semibold text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">Job</th>
-                  <th className="text-left px-4 py-3 font-semibold text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">Link</th>
-                  <th className="text-left px-4 py-3 font-semibold text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">Traces</th>
+                  <th className={`${thSortable} ${runsSortBy === "status" ? "text-gray-800 dark:text-gray-100" : "text-gray-500 dark:text-gray-400"}`} onClick={() => toggleSort("status")}>Status{sortArrow("status")}</th>
+                  <th className={`${thSortable} ${runsSortBy === "external_id" ? "text-gray-800 dark:text-gray-100" : "text-gray-500 dark:text-gray-400"}`} onClick={() => toggleSort("external_id")}>Run ID{sortArrow("external_id")}</th>
+                  <th className={`${thSortable} ${runsSortBy === "started_at" ? "text-gray-800 dark:text-gray-100" : "text-gray-500 dark:text-gray-400"}`} onClick={() => toggleSort("started_at")}>Started{sortArrow("started_at")}</th>
+                  <th className={`${thSortable} ${runsSortBy === "duration_seconds" ? "text-gray-800 dark:text-gray-100" : "text-gray-500 dark:text-gray-400"}`} onClick={() => toggleSort("duration_seconds")}>Duration{sortArrow("duration_seconds")}</th>
+                  <th className={`${thSortable} ${runsSortBy === "queued_at" ? "text-gray-800 dark:text-gray-100" : "text-gray-500 dark:text-gray-400"}`} onClick={() => toggleSort("queued_at")}>Queued{sortArrow("queued_at")}</th>
+                  <th className={`${thSortable} ${runsSortBy === "ref" ? "text-gray-800 dark:text-gray-100" : "text-gray-500 dark:text-gray-400"}`} onClick={() => toggleSort("ref")}>Ref{sortArrow("ref")}</th>
+                  <th className={`${thSortable} ${runsSortBy === "job" ? "text-gray-800 dark:text-gray-100" : "text-gray-500 dark:text-gray-400"}`} onClick={() => toggleSort("job")}>Job{sortArrow("job")}</th>
+                  <th className={`${thBase} text-gray-500 dark:text-gray-400`}>Link</th>
+                  <th className={`${thBase} text-gray-500 dark:text-gray-400`}>Traces</th>
                 </tr>
               </thead>
               <tbody>
@@ -629,6 +647,9 @@ function PipelineDetail() {
                         style={{ backgroundColor: statusColor(run.status) }}
                         title={run.status}
                       />
+                    </td>
+                    <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-gray-500 dark:text-gray-400">
+                      <span className="inline-block text-xs font-mono">{run.external_id}</span>
                     </td>
                     <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-gray-900 dark:text-gray-100">{formatDateTime(run.started_at)}</td>
                     <td className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-gray-900 dark:text-gray-100">{formatDuration(run.duration_seconds)}</td>
@@ -696,7 +717,8 @@ function PipelineDetail() {
               );
             })()}
           </>
-        )}
+          );
+        })()}
       </div>
 
       {/* Artifacts summary */}

@@ -58,8 +58,8 @@ const EMPTY_FORM: FormData = {
 const tw = {
   btn: "text-sm font-medium px-4 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all cursor-pointer",
   btnPrimary:
-    "bg-primary-600 text-white border-primary-600 hover:bg-primary-700",
-  btnDanger: "bg-red-600 text-white border-red-600 hover:bg-red-700",
+    "!bg-primary-600 !text-white !border-primary-600 hover:!bg-primary-700",
+  btnDanger: "!bg-red-600 !text-white !border-red-600 hover:!bg-red-700",
   btnSmall:
     "text-xs font-medium px-2.5 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer transition-all",
   table:

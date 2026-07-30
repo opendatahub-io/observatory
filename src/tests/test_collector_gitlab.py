@@ -478,7 +478,7 @@ async def test_gitlab_job_filter_exact_match(client):
             runs = await collector.collect_runs(db, pipeline)
 
     assert len(runs) == 1
-    assert runs[0]["external_id"] == "12345"
+    assert runs[0]["external_id"] == "12345-autofix-rfe"
     assert runs[0]["job"] == "autofix-rfe"
 
 

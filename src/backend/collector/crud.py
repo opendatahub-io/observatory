@@ -9,15 +9,15 @@ async def get_collector_states(db: aiosqlite.Connection) -> list[dict]:
         """
         SELECT
             cs.id,
-            cs.pipeline_id,
+            p.id     AS pipeline_id,
             p.name   AS pipeline_name,
             p.slug   AS pipeline_slug,
             cs.last_collected_at,
             cs.last_run_external_id,
             cs.last_error,
-            cs.consecutive_failures
-        FROM collector_state cs
-        JOIN pipelines p ON p.id = cs.pipeline_id
+            COALESCE(cs.consecutive_failures, 0) AS consecutive_failures
+        FROM pipelines p
+        LEFT JOIN collector_state cs ON cs.pipeline_id = p.id
         ORDER BY p.slug
         """
     )

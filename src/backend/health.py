@@ -11,11 +11,32 @@ Logic from PLAN.md:
           OR failure streak >= 3
           OR failure rate > 50% over last 10 runs
           OR no runs found in collection window
-  grey:   no expected interval configured (on-demand pipelines)
-          OR pipeline status is 'development' or 'deprecated'
+  grey:   pipeline status is 'development' or 'deprecated'
+          OR fewer than 2 runs (cannot infer interval)
 """
 
 from datetime import datetime, timezone
+from statistics import median
+
+
+def _infer_interval_minutes(runs: list[dict]) -> int | None:
+    """Estimate the typical run interval from the median gap between runs."""
+    timestamps = []
+    for r in runs:
+        ts = r.get("started_at")
+        if ts:
+            timestamps.append(_parse_ts(ts))
+    if len(timestamps) < 3:
+        return None
+    timestamps.sort(reverse=True)
+    gaps = []
+    for i in range(len(timestamps) - 1):
+        gap = (timestamps[i] - timestamps[i + 1]).total_seconds() / 60
+        if gap > 0:
+            gaps.append(gap)
+    if not gaps:
+        return None
+    return int(median(gaps) * 1.5)
 
 
 def compute_health(pipeline: dict, recent_runs: list[dict]) -> str:
@@ -23,6 +44,8 @@ def compute_health(pipeline: dict, recent_runs: list[dict]) -> str:
         return "grey"
 
     expected_interval = pipeline.get("expected_interval_minutes")
+    if not expected_interval:
+        expected_interval = _infer_interval_minutes(recent_runs)
     if not expected_interval:
         return "grey"
 

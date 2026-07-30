@@ -39,7 +39,7 @@ function fmtDate(s: string | null): string {
 
 const BTN =
   "text-sm font-medium px-4 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all cursor-pointer";
-const BTN_PRIMARY = `${BTN} bg-primary-600 text-white border-primary-600 hover:bg-primary-700`;
+const BTN_PRIMARY = `${BTN} !bg-primary-600 !text-white !border-primary-600 hover:!bg-primary-700`;
 const TH =
   "text-left px-4 py-3 font-semibold text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700";
 const TD =

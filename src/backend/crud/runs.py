@@ -12,6 +12,9 @@ async def resolve_pipeline_id(db: aiosqlite.Connection, slug: str) -> int | None
     return row["id"]
 
 
+SORTABLE_COLUMNS = {"started_at", "duration_seconds", "queued_at", "status", "ref", "job", "external_id"}
+
+
 async def list_runs(
     db: aiosqlite.Connection,
     pipeline_id: int,
@@ -20,6 +23,8 @@ async def list_runs(
     status: str | None = None,
     since: str | None = None,
     until: str | None = None,
+    sort_by: str | None = None,
+    sort_dir: str | None = None,
 ) -> tuple[list[dict], int]:
     """Return (runs, total_count) for a pipeline with optional filters."""
     conditions = ["pipeline_id = ?"]
@@ -37,6 +42,9 @@ async def list_runs(
 
     where = " AND ".join(conditions)
 
+    order_col = sort_by if sort_by in SORTABLE_COLUMNS else "started_at"
+    order_dir = "ASC" if sort_dir == "asc" else "DESC"
+
     # Total count
     count_cursor = await db.execute(
         f"SELECT COUNT(*) as cnt FROM pipeline_runs WHERE {where}",
@@ -48,7 +56,7 @@ async def list_runs(
     # Paginated results
     offset = (page - 1) * per_page
     data_cursor = await db.execute(
-        f"SELECT * FROM pipeline_runs WHERE {where} ORDER BY started_at DESC LIMIT ? OFFSET ?",
+        f"SELECT * FROM pipeline_runs WHERE {where} ORDER BY {order_col} {order_dir} LIMIT ? OFFSET ?",
         params + [per_page, offset],
     )
     rows = await data_cursor.fetchall()

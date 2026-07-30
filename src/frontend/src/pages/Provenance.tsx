@@ -278,7 +278,7 @@ function Provenance() {
                   {(["all", "pip", "rpm", "npm"] as ManagerFilter[]).map((f) => (
                     <button
                       key={f}
-                      className={`text-sm font-medium px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer transition-all ${pkgManagerFilter === f ? "bg-primary-600 text-white border-primary-600" : ""}`}
+                      className={`text-sm font-medium px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer transition-all ${pkgManagerFilter === f ? "!bg-primary-600 !text-white !border-primary-600" : ""}`}
                       onClick={() => setPkgManagerFilter(f)}
                     >
                       {f === "all" ? "All" : f.toUpperCase()}

@@ -326,7 +326,7 @@ function Collector() {
             {loading ? "Refreshing..." : "Refresh"}
           </button>
           <button
-            className="text-sm font-medium px-4 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all cursor-pointer bg-primary-600 text-white border-primary-600 hover:bg-primary-700"
+            className="text-sm font-medium px-4 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all cursor-pointer !bg-primary-600 !text-white !border-primary-600 hover:!bg-primary-700"
             onClick={() => void triggerCollector()}
           >
             Run Collector Now
@@ -499,7 +499,7 @@ function Collector() {
           {(["ALL", "DEBUG", "INFO", "WARNING", "ERROR"] as LogLevel[]).map((level) => (
             <button
               key={level}
-              className={`text-xs font-medium px-2.5 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer transition-all ${logLevelFilter === level ? "bg-primary-600 text-white border-primary-600" : ""}`}
+              className={`text-xs font-medium px-2.5 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer transition-all ${logLevelFilter === level ? "!bg-primary-600 !text-white !border-primary-600" : ""}`}
               onClick={() => setLogLevelFilter(level)}
             >
               {level}

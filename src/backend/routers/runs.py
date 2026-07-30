@@ -22,6 +22,8 @@ async def list_runs(
     status: Optional[str] = Query(default=None),
     since: Optional[str] = Query(default=None),
     until: Optional[str] = Query(default=None),
+    sort_by: Optional[str] = Query(default=None),
+    sort_dir: Optional[str] = Query(default=None),
     db: aiosqlite.Connection = Depends(get_db),
 ):
     pipeline_id = await resolve_pipeline_id(db, slug)
@@ -36,6 +38,8 @@ async def list_runs(
         status=status,
         since=since,
         until=until,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
     )
     return RunListResponse(
         runs=[RunResponse(**r) for r in runs],
