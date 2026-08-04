@@ -99,16 +99,6 @@ async def collect_data_repo(db, pipeline: dict) -> None:
             logger.error("HTTP error checking data repo %s: %s", results_repo, exc)
             return
 
-        # Check if we've already processed this commit
-        cursor = await db.execute(
-            "SELECT last_data_repo_sha FROM collector_state WHERE pipeline_id = ?",
-            (pipeline_id,),
-        )
-        state = await cursor.fetchone()
-        if state and state[0] == latest_sha:
-            logger.debug("Data repo %s unchanged (sha=%s)", results_repo, latest_sha[:8])
-            return
-
         # Get the most recent pipeline run to link artifacts to
         cursor = await db.execute(
             "SELECT id FROM pipeline_runs WHERE pipeline_id = ? ORDER BY started_at DESC LIMIT 1",
@@ -120,10 +110,32 @@ async def collect_data_repo(db, pipeline: dict) -> None:
             return
         run_id = run_row[0]
 
-        # Clear old data repo artifacts for this run
+        # Check if we've already processed this commit
+        cursor = await db.execute(
+            "SELECT last_data_repo_sha FROM collector_state WHERE pipeline_id = ?",
+            (pipeline_id,),
+        )
+        state = await cursor.fetchone()
+        if state and state[0] == latest_sha:
+            # SHA unchanged — re-link existing artifacts to the latest run
+            # so they stay visible as new pipeline runs are created
+            await db.execute(
+                """UPDATE job_artifacts SET pipeline_run_id = ?
+                WHERE source = 'data_repo' AND pipeline_run_id IN (
+                    SELECT id FROM pipeline_runs WHERE pipeline_id = ?
+                ) AND pipeline_run_id != ?""",
+                (run_id, pipeline_id, run_id),
+            )
+            await db.commit()
+            logger.debug("Data repo %s unchanged (sha=%s), re-linked to run %s", results_repo, latest_sha[:8], run_id)
+            return
+
+        # Clear ALL old data repo artifacts for this pipeline
         await db.execute(
-            "DELETE FROM job_artifacts WHERE pipeline_run_id = ? AND source = 'data_repo'",
-            (run_id,),
+            """DELETE FROM job_artifacts WHERE source = 'data_repo' AND pipeline_run_id IN (
+                SELECT id FROM pipeline_runs WHERE pipeline_id = ?
+            )""",
+            (pipeline_id,),
         )
 
         # Fetch repository tree (paginated)

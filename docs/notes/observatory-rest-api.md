@@ -240,16 +240,20 @@ Response: `{"spans": [{"trace_id": "...", "span_id": "...", "operation_name": ".
 
 ## Artifacts
 
+All artifact content — CI job outputs, console logs, and pipeline data/results repository files — is stored as blobs in the `job_artifacts` database table and served from there. The local `checkouts/` directory (used by the chat agent's `browse_files`/`read_file` tools) is a separate git clone and is **not** served by these endpoints.
+
 ### GET /api/pipelines/{slug}/runs/{run_id}/artifacts
 
 List artifact files for a run.
 
 **Source types** (`job_artifacts.source`):
-| Source | Description |
-|---|---|
-| `ci_job` | Files extracted from GitLab CI artifact ZIPs |
-| `job_trace` | Raw console log downloaded from GitLab's job trace endpoint |
-| `data_repo` | Files collected from a data repository |
+| Source | Description | How it gets there |
+|---|---|---|
+| `ci_job` | Files extracted from GitLab CI artifact ZIPs (e.g. `claude-otel.jsonl`, `run-manifest.json`) | Collector downloads the job artifact ZIP via GitLab API and extracts each file |
+| `job_trace` | Console log from a GitLab CI job (ANSI codes stripped) | Collector downloads via GitLab's job trace endpoint |
+| `data_repo` | Files from a pipeline's results/data repository (e.g. strategy reports, assessment markdown, HTML reports) | Collector fetches the file tree and raw content from the data repo via GitLab API (configured per-pipeline in `artifact-config`) |
+
+The `data_repo` source is the primary way to access pipeline output files (the actual work products). These are the same files that live in the pipeline's data repository on GitLab (e.g. `strat-pipeline-data`, `rfe-assessor-data`), fetched via the GitLab API and stored in the DB.
 
 Response:
 ```json
@@ -270,11 +274,28 @@ Response:
 
 ### GET /api/artifacts/{artifact_id}/content
 
-Download raw artifact content. Returns the file with its original MIME type. For `job_trace` artifacts, this returns the full console log as `text/plain` (ANSI codes stripped).
+Download raw artifact content. Returns the file with its original MIME type. Works for all source types — use this to read `data_repo` files (strategy reports, assessments, etc.) as well as CI job artifacts and traces.
 
 ### GET /api/pipelines/{slug}/artifacts/latest
 
-Get artifacts from the most recent run for a pipeline.
+Get artifacts from the most recent run for a pipeline. Limited to 500 rows — if a pipeline has many CI artifacts, `data_repo` files may be pushed out. Use the per-run endpoint above for reliable access to data repo files for a specific run.
+
+### Accessing pipeline output files (data repo content)
+
+```bash
+# List data repo files for a specific run
+curl -s 'http://localhost:8000/api/pipelines/strat-pipeline/runs/42/artifacts' \
+  | jq '.artifacts[] | select(.source=="data_repo") | {id, file_path, file_size}'
+
+# Read a specific file
+curl -s 'http://localhost:8000/api/artifacts/13080/content'
+
+# Find data repo files via the latest endpoint (may be incomplete for high-volume pipelines)
+curl -s 'http://localhost:8000/api/pipelines/rfe-assessor/artifacts/latest' \
+  | jq '.artifacts[] | select(.source=="data_repo")'
+```
+
+Data repo collection is configured per-pipeline via the `artifact-config` sub-resource (see Pipeline Metadata above). The collector tracks the latest commit SHA and only fetches new content when the data repo has changed.
 
 ---
 

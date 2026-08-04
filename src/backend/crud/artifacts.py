@@ -29,10 +29,13 @@ async def list_pipeline_latest_artifacts(db: aiosqlite.Connection, pipeline_id: 
         """
         SELECT a.id, a.source, a.source_ref, a.file_path, a.file_size, a.mime_type, a.created_at
         FROM job_artifacts a
-        JOIN pipeline_runs r ON r.id = a.pipeline_run_id
-        WHERE r.pipeline_id = ?
-        ORDER BY a.created_at DESC, a.source, a.file_path
-        LIMIT 500
+        WHERE a.pipeline_run_id = (
+            SELECT id FROM pipeline_runs
+            WHERE pipeline_id = ?
+            ORDER BY started_at DESC
+            LIMIT 1
+        )
+        ORDER BY a.source, a.file_path
         """,
         (pipeline_id,),
     )
