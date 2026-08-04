@@ -69,7 +69,7 @@ async def download_and_process_artifacts(db, pipeline: dict, run: dict) -> dict 
     base_url = _gitlab_api_base(repo_url)
     headers = {"PRIVATE-TOKEN": token}
     run_id = run["id"]
-    pipeline_ext_id = run["external_id"]
+    pipeline_ext_id = run["external_id"].split("-")[0]
 
     async with httpx.AsyncClient(
         base_url=base_url,

@@ -1,15 +1,16 @@
 """Health status computation for pipelines.
 
-Logic from PLAN.md:
+Logic:
   green:  last successful run within 1x expected interval
           AND last run succeeded
           AND failure rate < 20% over last 10 runs
   yellow: last successful run within 2x expected interval
           OR last run failed but previous succeeded
           OR failure rate 20-50% over last 10 runs
-  red:    last successful run > 2x expected interval
-          OR failure streak >= 3
+          OR last successful run > 2x expected interval (stale)
+  red:    failure streak >= 3
           OR failure rate > 50% over last 10 runs
+          OR no successful run found at all
           OR no runs found in collection window
   grey:   pipeline status is 'development' or 'deprecated'
           OR fewer than 2 runs (cannot infer interval)
@@ -87,9 +88,9 @@ def compute_health(pipeline: dict, recent_runs: list[dict]) -> str:
         return "red"
     if minutes_since_success is None:
         return "red"
-    if minutes_since_success > expected_interval * 2:
-        return "red"
 
+    if minutes_since_success > expected_interval * 2:
+        return "yellow"
     if failure_rate >= 0.2:
         return "yellow"
     if last_run_status == "failed":

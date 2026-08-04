@@ -59,10 +59,10 @@ def test_red_high_failure_rate():
     assert compute_health(pipeline, runs) == "red"
 
 
-def test_red_success_too_old():
+def test_yellow_success_too_old():
     pipeline = _pipeline(expected_interval_minutes=60)
     runs = [_run("success", 180)]
-    assert compute_health(pipeline, runs) == "red"
+    assert compute_health(pipeline, runs) == "yellow"
 
 
 def test_yellow_last_run_failed():
