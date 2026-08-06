@@ -260,6 +260,30 @@ function computeWaitSeconds(queued: string | null, started: string | null): numb
   return diff > 0 ? Math.floor(diff / 1000) : null;
 }
 
+/** Compute ~3-4 nice round tick values for a y-axis given a max. */
+function niceTicks(maxVal: number): number[] {
+  if (maxVal <= 0) return [0];
+  const rough = maxVal / 3;
+  const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+  const candidates = [1, 2, 5, 10];
+  const step = mag * (candidates.find((c) => c * mag >= rough) ?? 10);
+  const ticks: number[] = [];
+  for (let v = 0; v <= maxVal; v += step) {
+    ticks.push(v);
+  }
+  if (ticks[ticks.length - 1]! < maxVal) ticks.push(ticks[ticks.length - 1]! + step);
+  return ticks;
+}
+
+/** Format seconds into a compact y-axis label. */
+function formatTickSeconds(s: number): string {
+  if (s === 0) return "0";
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.round(s / 60)}m`;
+  const h = s / 3600;
+  return h === Math.floor(h) ? `${h}h` : `${h.toFixed(1)}h`;
+}
+
 const PER_PAGE = 20;
 
 /* ------------------------------------------------------------------ */
@@ -521,7 +545,7 @@ function PipelineDetail() {
       <div className="mb-8">
         <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-3">Run History</h2>
 
-        {/* Charts — duration + success rate side by side */}
+        {/* Charts — duration, success rate, queue wait */}
         {runs.length >= 2 && (() => {
           const sorted = [...runs]
             .filter((r) => r.duration_seconds != null && r.duration_seconds > 0)
@@ -544,50 +568,104 @@ function PipelineDetail() {
             });
           }
 
+          const waitData = allSorted
+            .map((r) => ({ run: r, wait: computeWaitSeconds(r.queued_at, r.started_at) }))
+            .filter((d): d is { run: Run; wait: number } => d.wait != null && d.wait > 0);
+          const maxWait = waitData.length > 0 ? Math.max(...waitData.map((d) => d.wait)) : 1;
+
           return (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
-              {/* Duration chart */}
-              {sorted.length > 0 && (
-                <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-5">
-                  <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">Run Duration</h3>
-                  <div className="flex items-end gap-[2px] h-48">
-                    {sorted.map((run) => (
-                      <div
-                        key={run.id}
-                        className="flex-1 rounded-t transition-all"
-                        style={{
-                          height: `${(run.duration_seconds! / maxDuration) * 100}%`,
-                          backgroundColor: statusColor(run.status),
-                        }}
-                        title={`${formatDuration(run.duration_seconds)} — ${run.status} — ${formatDateTime(run.started_at)}`}
-                      />
-                    ))}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+              {/* Queue wait time chart */}
+              {waitData.length > 0 && (() => {
+                const waitTicks = niceTicks(maxWait);
+                const waitCeil = waitTicks[waitTicks.length - 1] || 1;
+                return (
+                  <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-5">
+                    <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">Queue Wait Time</h3>
+                    <div className="flex h-48">
+                      <div className="flex flex-col justify-between pr-2 text-[10px] text-gray-400 dark:text-gray-500 w-8 text-right shrink-0">
+                        {[...waitTicks].reverse().map((t) => <span key={t}>{formatTickSeconds(t)}</span>)}
+                      </div>
+                      <div className="flex items-end gap-[2px] flex-1 border-l border-gray-200 dark:border-gray-700 pl-1">
+                        {waitData.map((d) => {
+                          const pct = (d.wait / waitCeil) * 100;
+                          const color = d.wait > 600
+                            ? "rgba(239, 68, 68, 0.7)"
+                            : d.wait > 120
+                              ? "rgba(245, 158, 11, 0.7)"
+                              : "rgba(59, 130, 246, 0.7)";
+                          return (
+                            <div
+                              key={d.run.id}
+                              className="flex-1 rounded-t transition-all"
+                              style={{ height: `${pct}%`, backgroundColor: color }}
+                              title={`${formatDuration(d.wait)} wait — ${formatDateTime(d.run.started_at)}`}
+                            />
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-2">Blue &le; 2m, amber &le; 10m, red &gt; 10m</p>
                   </div>
-                  <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-2">Green = success, red = failed, yellow = running</p>
-                </div>
-              )}
+                );
+              })()}
+
+              {/* Duration chart */}
+              {sorted.length > 0 && (() => {
+                const durTicks = niceTicks(maxDuration);
+                const durCeil = durTicks[durTicks.length - 1] || 1;
+                return (
+                  <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-5">
+                    <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">Run Duration</h3>
+                    <div className="flex h-48">
+                      <div className="flex flex-col justify-between pr-2 text-[10px] text-gray-400 dark:text-gray-500 w-8 text-right shrink-0">
+                        {[...durTicks].reverse().map((t) => <span key={t}>{formatTickSeconds(t)}</span>)}
+                      </div>
+                      <div className="flex items-end gap-[2px] flex-1 border-l border-gray-200 dark:border-gray-700 pl-1">
+                        {sorted.map((run) => (
+                          <div
+                            key={run.id}
+                            className="flex-1 rounded-t transition-all"
+                            style={{
+                              height: `${(run.duration_seconds! / durCeil) * 100}%`,
+                              backgroundColor: statusColor(run.status),
+                            }}
+                            title={`${formatDuration(run.duration_seconds)} — ${run.status} — ${formatDateTime(run.started_at)}`}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-2">Green = success, red = failed, yellow = running</p>
+                  </div>
+                );
+              })()}
 
               {/* Success rate chart */}
               {successRates.length > 0 && (
                 <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-5">
                   <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">Success Rate (rolling {windowSize}-run window)</h3>
-                  <div className="flex items-end gap-[2px] h-48">
-                    {successRates.map((entry, i) => (
-                      <div
-                        key={i}
-                        className="flex-1 rounded-t transition-all"
-                        style={{
-                          height: `${entry.rate}%`,
-                          backgroundColor:
-                            entry.rate >= 80
-                              ? "rgba(16, 185, 129, 0.6)"
-                              : entry.rate >= 50
-                                ? "rgba(245, 158, 11, 0.6)"
-                                : "rgba(239, 68, 68, 0.6)",
-                        }}
-                        title={`${entry.label}: ${entry.rate}% success`}
-                      />
-                    ))}
+                  <div className="flex h-48">
+                    <div className="flex flex-col justify-between pr-2 text-[10px] text-gray-400 dark:text-gray-500 w-8 text-right shrink-0">
+                      <span>100%</span><span>75%</span><span>50%</span><span>25%</span><span>0%</span>
+                    </div>
+                    <div className="flex items-end gap-[2px] flex-1 border-l border-gray-200 dark:border-gray-700 pl-1">
+                      {successRates.map((entry, i) => (
+                        <div
+                          key={i}
+                          className="flex-1 rounded-t transition-all"
+                          style={{
+                            height: `${entry.rate}%`,
+                            backgroundColor:
+                              entry.rate >= 80
+                                ? "rgba(16, 185, 129, 0.6)"
+                                : entry.rate >= 50
+                                  ? "rgba(245, 158, 11, 0.6)"
+                                  : "rgba(239, 68, 68, 0.6)",
+                          }}
+                          title={`${entry.label}: ${entry.rate}% success`}
+                        />
+                      ))}
+                    </div>
                   </div>
                   <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-2">Green &ge; 80%, amber &ge; 50%, red &lt; 50%</p>
                 </div>
