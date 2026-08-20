@@ -1131,6 +1131,180 @@ Delete a data source. Returns 204.
 
 ---
 
+## Repositories
+
+The repository registry normalizes all git repo references from pipelines, skills, shared libraries, and artifact/results repos into a single deduplicated table keyed by `(domain, owner, name)`. Repositories are cloned locally and kept in sync by a background loop on a configurable interval (default 60 minutes). Check `last_synced_at` in the list response to see how fresh the local checkout is. If you need the latest data, call `POST /{repo_id}/sync` before reading files — the file-browse endpoints serve whatever is on disk, which may be up to one sync interval behind the remote.
+
+### GET /api/v1/repositories
+
+List all registered repositories.
+
+Query parameters:
+| Param | Type | Description |
+|---|---|---|
+| `status` | string | Filter by status: `active`, `inactive`, `archived` |
+| `kind` | string | Filter by kind: `pipeline_source`, `skill`, `shared_lib`, `results` |
+
+Response:
+```json
+[
+  {
+    "id": 1,
+    "domain": "gitlab.com",
+    "owner": "redhat/rhel-ai/agentic-ci",
+    "name": "rfe-assessor-data",
+    "kind": "results",
+    "git_url": "https://gitlab.com/redhat/rhel-ai/agentic-ci/rfe-assessor-data",
+    "description": null,
+    "status": "active",
+    "default_branch": "main",
+    "checkout_path": "/checkouts/gitlab.com/redhat/rhel-ai/agentic-ci/rfe-assessor-data",
+    "last_synced_at": "2026-08-06T12:00:00Z",
+    "last_sync_status": "ok",
+    "last_sync_error": null
+  }
+]
+```
+
+### GET /api/v1/repositories/lookup
+
+Look up a repository by its `(domain, owner, name)` triple.
+
+Query parameters: `domain` (required), `owner` (required), `name` (required).
+
+### POST /api/v1/repositories
+
+Register a new repository manually. Returns 409 if `(domain, owner, name)` already exists.
+
+Body:
+```json
+{
+  "domain": "gitlab.com",
+  "owner": "org/subgroup",
+  "name": "my-repo",
+  "kind": "results",
+  "git_url": "https://gitlab.com/org/subgroup/my-repo",
+  "description": "optional",
+  "status": "active",
+  "default_branch": "main"
+}
+```
+
+### GET /api/v1/repositories/{repo_id}
+
+Get repository detail including linked pipelines.
+
+### PUT /api/v1/repositories/{repo_id}
+
+Update a repository. All fields optional: `description`, `status`, `default_branch`.
+
+### POST /api/v1/repositories/{repo_id}/sync
+
+Trigger an immediate git sync (clone or fetch+reset). Returns the sync result. **Call this before using the file-browse endpoints if you need up-to-date content.** The background sync loop runs hourly by default, so a manual sync ensures you're reading the latest commit.
+
+### DELETE /api/v1/repositories/{repo_id}
+
+Deregister a repository. Returns 409 if pipelines still link to it; remove those references first. Returns 204.
+
+### File Browsing
+
+These endpoints provide read access to files in the local checkouts of registered repositories. The data served reflects the state of the last sync — check `last_synced_at` on the repository, or call `POST /{repo_id}/sync` first to pull the latest. Security: `.git` internals and common secret files (`.env`, credential files, private keys) are never served. Path traversal outside the repository root is blocked.
+
+#### GET /api/v1/repositories/{repo_id}/tree
+
+List files and directories at a path within the repository checkout.
+
+Query parameters:
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `path` | string | `.` | Relative path within the checkout |
+
+Response:
+```json
+{
+  "path": "/",
+  "entries": [
+    {"name": "README.md", "type": "file", "size": 1234},
+    {"name": "results", "type": "directory", "size": null},
+    {"name": "reports", "type": "directory", "size": null}
+  ],
+  "truncated": false
+}
+```
+
+Maximum 500 entries per response. `.git` directories and secret files are hidden.
+
+#### GET /api/v1/repositories/{repo_id}/blob
+
+Read the content of a file within the repository checkout.
+
+Query parameters:
+| Param | Type | Description |
+|---|---|---|
+| `path` | string | **Required.** Relative file path within the checkout |
+
+Response:
+```json
+{
+  "path": "results/RHAIRFE-2100/assessment.md",
+  "size": 8192,
+  "mime_type": "text/markdown",
+  "content": "# Assessment for RHAIRFE-2100\n\n...",
+  "truncated": false
+}
+```
+
+Maximum 512 KB per file. Files exceeding this limit are truncated with `truncated: true`. Protected files (`.env`, `.git/config`, private keys, etc.) return 403.
+
+#### GET /api/v1/repositories/{repo_id}/search
+
+Search for a pattern across files in the repository using `git grep`.
+
+Query parameters:
+| Param | Type | Description |
+|---|---|---|
+| `q` | string | **Required.** Search pattern |
+| `glob` | string | File glob filter, e.g. `*.py`, `*.md` |
+
+Response:
+```json
+{
+  "pattern": "RHAIRFE-2100",
+  "matches": [
+    {"file": "results/RHAIRFE-2100/assessment.md", "line": 1, "text": "# Assessment for RHAIRFE-2100"},
+    {"file": "results/RHAIRFE-2100/metadata.json", "line": 3, "text": "\"issue_key\": \"RHAIRFE-2100\""}
+  ],
+  "truncated": false
+}
+```
+
+Maximum 200 matches and 5 matches per file. Secret files are excluded from results. Returns 404 if the repository has not been synced yet.
+
+### Recipes for Repository File Access
+
+```bash
+# List all results repos
+curl -s 'http://localhost:8000/api/v1/repositories?kind=results' | jq '.[].name'
+
+# Browse the root of a data repo (repo_id=3)
+curl -s 'http://localhost:8000/api/v1/repositories/3/tree' | jq '.entries[]'
+
+# Read an assessment file
+curl -s 'http://localhost:8000/api/v1/repositories/3/blob?path=results/RHAIRFE-2100/assessment.md' | jq -r '.content'
+
+# Search for a Jira key across a data repo
+curl -s 'http://localhost:8000/api/v1/repositories/3/search?q=RHAIRFE-2100' | jq '.matches'
+
+# Search only markdown files
+curl -s 'http://localhost:8000/api/v1/repositories/3/search?q=RHAIRFE-2100&glob=*.md' | jq '.matches'
+
+# Trigger a sync then read fresh data
+curl -s -X POST 'http://localhost:8000/api/v1/repositories/3/sync'
+curl -s 'http://localhost:8000/api/v1/repositories/3/blob?path=results/latest-report.md' | jq -r '.content'
+```
+
+---
+
 ## Admin
 
 ### GET /api/admin/db-health
@@ -1266,6 +1440,24 @@ curl -s 'http://localhost:8000/api/v2/claims/occurrences/42/history' | jq '.'
 
 ```bash
 curl -s 'http://localhost:8000/api/telemetry/cost?since=2026-07-15T00:00:00Z' | jq '.'
+```
+
+### Read pipeline output files from data repos
+
+Pipeline work products (assessments, strategy reports, HTML reports) live in data/results repositories that Observatory syncs locally. Use the repository file-browse endpoints instead of accessing GitLab directly.
+
+```bash
+# Find the results repo for a pipeline
+curl -s 'http://localhost:8000/api/v1/repositories?kind=results' \
+  | jq '.[] | {id, name, last_synced_at}'
+
+# Search a data repo for a specific Jira key (e.g. RHAIRFE-2100)
+curl -s 'http://localhost:8000/api/v1/repositories/3/search?q=RHAIRFE-2100' \
+  | jq '.matches[] | {file, line, text}'
+
+# Read the actual assessment content
+curl -s 'http://localhost:8000/api/v1/repositories/3/blob?path=results/RHAIRFE-2100/assessment.md' \
+  | jq -r '.content'
 ```
 
 ### Trigger a collection and monitor

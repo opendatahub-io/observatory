@@ -16,6 +16,9 @@ from backend.crud.repositories import (
     update_repository,
     delete_repository,
     record_sync_result,
+    list_tree,
+    read_blob,
+    search_files,
 )
 from backend.schemas.repositories import (
     RepositoryCreate,
@@ -23,6 +26,9 @@ from backend.schemas.repositories import (
     RepositoryResponse,
     RepositoryDetailResponse,
     SyncResult,
+    TreeResponse,
+    BlobResponse,
+    SearchResponse,
 )
 
 router = APIRouter(prefix="/api/v1/repositories", tags=["repositories"])
@@ -115,3 +121,61 @@ async def deregister_repo(repo_id: int, db: aiosqlite.Connection = Depends(get_d
         )
     await delete_repository(db, repo_id)
     return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# File browsing
+# ---------------------------------------------------------------------------
+
+@router.get("/{repo_id}/tree", response_model=TreeResponse)
+async def repo_tree(
+    repo_id: int,
+    path: str = Query(".", description="Relative path within the checkout"),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    repo = await get_repository(db, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    try:
+        return await asyncio.to_thread(list_tree, repo, path)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except NotADirectoryError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+
+@router.get("/{repo_id}/blob", response_model=BlobResponse)
+async def repo_blob(
+    repo_id: int,
+    path: str = Query(..., description="Relative file path within the checkout"),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    repo = await get_repository(db, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    try:
+        return await asyncio.to_thread(read_blob, repo, path)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except IsADirectoryError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+
+@router.get("/{repo_id}/search", response_model=SearchResponse)
+async def repo_search(
+    repo_id: int,
+    q: str = Query(..., description="Search pattern (passed to git grep)"),
+    glob: str | None = Query(None, description="File glob filter, e.g. '*.py'"),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    repo = await get_repository(db, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    try:
+        return await asyncio.to_thread(search_files, repo, q, glob)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))

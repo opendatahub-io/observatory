@@ -963,33 +963,9 @@ def _get_allowed_roots() -> list[Path]:
 
 
 # --- Secrets / VCS-internals denylist ---------------------------------------
-# Layered on top of the allow-list check in _validate_path(). Necessary because
-# /checkouts (git working trees) is now a browse root: git tokens must never be
-# read from a repo's .git/config, and common secret files must be unreadable via
-# repo_read / browse_files / read_file / search_files. See ADR-0028.
-_DENIED_PATH_COMPONENTS = {".git"}
-_DENIED_FILENAMES = {
-    ".env", ".npmrc", ".netrc", ".pgpass", ".git-credentials",
-    ".dockercfg", ".htpasswd", "credentials", "credentials.json",
-}
-_DENIED_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".keystore", ".jks")
-_DENIED_NAME_SUBSTRINGS = ("id_rsa", "id_dsa", "id_ecdsa", "id_ed25519")
-
-
-def _is_denied_path(path: Path) -> bool:
-    """True if a path is protected (VCS internals or a common secret file)."""
-    if any(comp in _DENIED_PATH_COMPONENTS for comp in path.parts):
-        return True
-    lname = path.name.lower()
-    if lname in _DENIED_FILENAMES:
-        return True
-    if lname.startswith(".env"):  # .env, .env.local, .env.production, ...
-        return True
-    if any(lname.endswith(suf) for suf in _DENIED_SUFFIXES):
-        return True
-    if any(sub in lname for sub in _DENIED_NAME_SUBSTRINGS):
-        return True
-    return False
+# Shared with the REST file-browse API in routers/repositories.py.
+# See ADR-0028.
+from backend.path_security import is_denied_path as _is_denied_path
 
 
 def _validate_path(raw: str) -> Path:

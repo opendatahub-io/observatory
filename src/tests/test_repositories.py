@@ -343,3 +343,141 @@ async def test_repo_read_blocks_secret_files(repo_db, tmp_path, monkeypatch):
     blocked = await tools._handle_repo_read(repo_db, {"repo_id": rid, "filepath": ".env"})
     assert "error" in blocked
     assert "leak" not in str(blocked)
+
+
+# ---------------------------------------------------------------------------
+# 4. File-browse CRUD functions
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def synced_repo(tmp_path):
+    """Create a fake checked-out repo tree and return (repo dict, checkout_root)."""
+    import backend.config
+
+    checkout_root = tmp_path / "checkouts"
+    repo_dir = checkout_root / "gitlab.com" / "acme" / "data-repo"
+    repo_dir.mkdir(parents=True)
+
+    (repo_dir / "README.md").write_text("# data repo\n")
+    (repo_dir / "results").mkdir()
+    (repo_dir / "results" / "report.json").write_text('{"status": "pass"}\n')
+    (repo_dir / "results" / "metrics.csv").write_text("a,b\n1,2\n")
+    (repo_dir / ".env").write_text("SECRET=oops\n")
+    (repo_dir / ".git").mkdir()
+    (repo_dir / ".git" / "config").write_text("[core]\n")
+
+    # Init as a real git repo so git grep works.
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo_dir, check=True, capture_output=True)
+
+    backend.config.settings = backend.config.Settings(checkout_root=checkout_root)
+
+    repo = {"domain": "gitlab.com", "owner": "acme", "name": "data-repo"}
+    return repo, checkout_root
+
+
+def test_list_tree_root(synced_repo):
+    from backend.crud.repositories import list_tree
+
+    repo, _ = synced_repo
+    result = list_tree(repo, ".")
+    names = {e["name"] for e in result["entries"]}
+    assert "README.md" in names
+    assert "results" in names
+    # .git and .env must be hidden
+    assert ".git" not in names
+    assert ".env" not in names
+
+
+def test_list_tree_subdir(synced_repo):
+    from backend.crud.repositories import list_tree
+
+    repo, _ = synced_repo
+    result = list_tree(repo, "results")
+    names = {e["name"] for e in result["entries"]}
+    assert "report.json" in names
+    assert "metrics.csv" in names
+    for entry in result["entries"]:
+        assert entry["type"] == "file"
+        assert entry["size"] is not None and entry["size"] > 0
+
+
+def test_list_tree_not_found(synced_repo):
+    from backend.crud.repositories import list_tree
+
+    repo, _ = synced_repo
+    with pytest.raises(FileNotFoundError):
+        list_tree(repo, "nonexistent")
+
+
+def test_list_tree_escapes_root(synced_repo):
+    from backend.crud.repositories import list_tree
+
+    repo, _ = synced_repo
+    with pytest.raises(ValueError, match="escapes"):
+        list_tree(repo, "../../etc")
+
+
+def test_read_blob(synced_repo):
+    from backend.crud.repositories import read_blob
+
+    repo, _ = synced_repo
+    result = read_blob(repo, "results/report.json")
+    assert result["content"] == '{"status": "pass"}\n'
+    assert result["mime_type"] == "application/json"
+    assert result["size"] > 0
+    assert result["truncated"] is False
+
+
+def test_read_blob_denied(synced_repo):
+    from backend.crud.repositories import read_blob
+
+    repo, _ = synced_repo
+    with pytest.raises(ValueError, match="protected"):
+        read_blob(repo, ".env")
+
+
+def test_read_blob_not_found(synced_repo):
+    from backend.crud.repositories import read_blob
+
+    repo, _ = synced_repo
+    with pytest.raises(FileNotFoundError):
+        read_blob(repo, "no-such-file.txt")
+
+
+def test_search_files(synced_repo):
+    from backend.crud.repositories import search_files
+
+    repo, _ = synced_repo
+    result = search_files(repo, "pass")
+    assert len(result["matches"]) > 0
+    assert any(m["file"] == "results/report.json" for m in result["matches"])
+
+
+def test_search_files_with_glob(synced_repo):
+    from backend.crud.repositories import search_files
+
+    repo, _ = synced_repo
+    result = search_files(repo, "pass", glob="*.json")
+    assert len(result["matches"]) > 0
+    assert all(m["file"].endswith(".json") for m in result["matches"])
+
+
+def test_search_files_no_match(synced_repo):
+    from backend.crud.repositories import search_files
+
+    repo, _ = synced_repo
+    result = search_files(repo, "zzzzz_no_match_zzzzz")
+    assert len(result["matches"]) == 0
+
+
+def test_search_files_hides_denied(synced_repo):
+    from backend.crud.repositories import search_files
+
+    repo, _ = synced_repo
+    # .env contains "SECRET" but should not appear in results
+    result = search_files(repo, "SECRET")
+    assert all(".env" not in m["file"] for m in result["matches"])

@@ -7,11 +7,14 @@ status/branch overrides, delete (blocked while links remain), and recording
 sync outcomes.
 """
 
+import mimetypes
+import subprocess
 from pathlib import Path
 
 import aiosqlite
 
 import backend.config
+from backend.path_security import is_denied_path, validate_repo_path
 
 
 def _with_checkout_path(row: dict) -> dict:
@@ -147,3 +150,127 @@ async def record_sync_result(
         (status, error, repo_id),
     )
     await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# File browsing
+# ---------------------------------------------------------------------------
+
+_MAX_TREE_ENTRIES = 500
+_MAX_BLOB_BYTES = 512 * 1024
+_MAX_SEARCH_MATCHES = 200
+
+
+def _repo_dir(repo: dict) -> Path:
+    root = backend.config.settings.checkout_root
+    return Path(root) / repo["domain"] / repo["owner"] / repo["name"]
+
+
+def list_tree(repo: dict, rel_path: str) -> dict:
+    """List directory entries at *rel_path* inside a repo checkout."""
+    repo_dir = _repo_dir(repo)
+    target = validate_repo_path(
+        backend.config.settings.checkout_root, repo_dir, rel_path
+    )
+    if not target.exists():
+        raise FileNotFoundError(f"Path not found: {rel_path}")
+    if not target.is_dir():
+        raise NotADirectoryError(f"Not a directory: {rel_path}")
+
+    entries = []
+    truncated = False
+    for child in sorted(target.iterdir()):
+        if is_denied_path(child):
+            continue
+        if len(entries) >= _MAX_TREE_ENTRIES:
+            truncated = True
+            break
+        entry = {
+            "name": child.name,
+            "type": "directory" if child.is_dir() else "file",
+        }
+        if child.is_file():
+            try:
+                entry["size"] = child.stat().st_size
+            except OSError:
+                entry["size"] = None
+        entries.append(entry)
+
+    display_path = rel_path if rel_path and rel_path != "." else "/"
+    return {"path": display_path, "entries": entries, "truncated": truncated}
+
+
+def read_blob(repo: dict, rel_path: str) -> dict:
+    """Read file content at *rel_path* inside a repo checkout."""
+    repo_dir = _repo_dir(repo)
+    target = validate_repo_path(
+        backend.config.settings.checkout_root, repo_dir, rel_path
+    )
+    if not target.exists():
+        raise FileNotFoundError(f"Path not found: {rel_path}")
+    if target.is_dir():
+        raise IsADirectoryError(f"Is a directory: {rel_path}. Use the tree endpoint.")
+
+    size = target.stat().st_size
+    truncated = size > _MAX_BLOB_BYTES
+    raw = target.read_bytes()[:_MAX_BLOB_BYTES]
+
+    try:
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        content = raw.decode("latin-1")
+
+    mime = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+
+    return {
+        "path": rel_path,
+        "size": size,
+        "mime_type": mime,
+        "content": content,
+        "truncated": truncated,
+    }
+
+
+def search_files(repo: dict, pattern: str, glob: str | None = None) -> dict:
+    """Grep for *pattern* across files in a repo checkout."""
+    repo_dir = _repo_dir(repo)
+    if not repo_dir.exists():
+        raise FileNotFoundError("Repository has not been synced yet")
+
+    cmd = [
+        "git", "grep", "-n", "-I", "--no-color",
+        "-e", pattern,
+        "--max-count", "5",
+    ]
+    if glob:
+        cmd.extend(["--", glob])
+
+    try:
+        result = subprocess.run(
+            cmd, cwd=repo_dir, capture_output=True, text=True, timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        return {"pattern": pattern, "matches": [], "truncated": True}
+
+    matches = []
+    truncated = False
+    for line in result.stdout.splitlines():
+        if len(matches) >= _MAX_SEARCH_MATCHES:
+            truncated = True
+            break
+        parts = line.split(":", 2)
+        if len(parts) < 3:
+            continue
+        file_path, line_no, text = parts
+        if is_denied_path(Path(file_path)):
+            continue
+        try:
+            matches.append({
+                "file": file_path,
+                "line": int(line_no),
+                "text": text.strip(),
+            })
+        except ValueError:
+            continue
+
+    return {"pattern": pattern, "matches": matches, "truncated": truncated}

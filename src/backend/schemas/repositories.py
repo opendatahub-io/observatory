@@ -1,6 +1,6 @@
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 RepoKind = Literal["pipeline_source", "skill", "shared_lib", "results"]
 RepoStatus = Literal["active", "inactive", "archived"]
@@ -58,3 +58,33 @@ class SyncResult(BaseModel):
     status: str
     path: Optional[str] = None
     error: Optional[str] = None
+
+
+# --- File-browse endpoints ---------------------------------------------------
+
+class TreeEntry(BaseModel):
+    name: str
+    type: Literal["file", "directory"]
+    size: Optional[int] = None
+
+class TreeResponse(BaseModel):
+    path: str
+    entries: list[TreeEntry]
+    truncated: bool = False
+
+class BlobResponse(BaseModel):
+    path: str
+    size: int
+    mime_type: str
+    content: str
+    truncated: bool = False
+
+class SearchMatch(BaseModel):
+    file: str
+    line: int
+    text: str
+
+class SearchResponse(BaseModel):
+    pattern: str
+    matches: list[SearchMatch]
+    truncated: bool = False
