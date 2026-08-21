@@ -1,1 +1,0 @@
-/home/jtanner/workspace/github/jctanner.redhat/personal_assistant/notes/plans/agentic-ci-observatory.md

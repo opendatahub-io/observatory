@@ -128,9 +128,9 @@ function parseRepoUrl(url: string): { domain: string; owner: string; name: strin
   const afterAt = raw.includes("@") ? raw.split("@").slice(1).join("@") : "";
   if (!raw.includes("://") && afterAt && afterAt.includes(":")) {
     // SCP-style: git@host:owner/repo.git
-    const [host, ...rest] = afterAt.split(":");
-    domain = host;
-    path = rest.join(":");
+    const separator = afterAt.indexOf(":");
+    domain = afterAt.slice(0, separator);
+    path = afterAt.slice(separator + 1);
   } else {
     try {
       const u = new URL(raw);
@@ -143,8 +143,9 @@ function parseRepoUrl(url: string): { domain: string; owner: string; name: strin
   path = path.replace(/^\/+|\/+$/g, "");
   if (path.endsWith(".git")) path = path.slice(0, -4);
   const parts = path.split("/").filter(Boolean);
-  if (!domain || parts.length < 2) return null;
-  return { domain, owner: parts.slice(0, -1).join("/"), name: parts[parts.length - 1] };
+  const name = parts.pop();
+  if (!domain || !name || parts.length < 1) return null;
+  return { domain, owner: parts.join("/"), name };
 }
 
 /* ------------------------------------------------------------------ */
