@@ -179,7 +179,32 @@ async def test_purge_nothing_to_delete(client):
         "run_commands": 0,
         "run_packages": 0,
         "run_containers": 0,
+        "claim_report_jobs": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_purge_old_claim_report_jobs(client):
+    db = await get_db()
+    await db.execute(
+        """INSERT INTO claim_report_jobs
+           (status, report_format, filters, summary, json_report, expires_at)
+           VALUES ('complete', 'json', '{}', '{}', '{}', ?)""",
+        (_ts(31),),
+    )
+    await db.execute(
+        """INSERT INTO claim_report_jobs
+           (status, report_format, filters, summary, json_report, expires_at)
+           VALUES ('complete', 'json', '{}', '{}', '{}', ?)""",
+        (_ts(1),),
+    )
+    await db.commit()
+
+    counts = await purge_old_data(db)
+
+    assert counts["claim_report_jobs"] == 1
+    cursor = await db.execute("SELECT COUNT(*) AS count FROM claim_report_jobs")
+    assert (await cursor.fetchone())["count"] == 1
 
 
 # ---------------------------------------------------------------------------

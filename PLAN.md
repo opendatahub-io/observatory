@@ -38,6 +38,7 @@
 ## Active Plans
 
 - [Semantic Claim Consolidation](docs/plans/semantic-claim-consolidation-plan.md) — Reviewed grouping implemented; automatic consolidation and verification reuse remain gated by live evaluation
+- [Claim Assurance Export Reports](docs/plans/claim-assurance-export-report-plan.md) — JSON/Markdown snapshots, saved report jobs, downloads, and retention implemented
 
 ---
 

@@ -156,3 +156,38 @@ Discovered:
 - Full `./.venv/bin/pytest` currently reports 284 passing and 37 unrelated
   failures in OTLP routing, artifact parser/log expectations, GitLab collector
   mocks, org-pulse fixture expectations, and seed-count tests.
+
+
+## 2026-07-18
+
+Agent: codex
+
+Completed:
+- Added Claim Assurance export reports for asynchronous/offline review.
+- Added synchronous JSON and Markdown report endpoints under
+  `/api/v2/claims/reports/` with filters for Jira key, occurrence ID,
+  normalized claim ID, canonical group, artifact type, pipeline slug, source
+  file, claim type, verdict, processing state, explanation route, human review,
+  and creation time.
+- Added a deterministic report object containing occurrence provenance,
+  extraction evaluation, verification history, structured evidence,
+  explanations, regression runs, human overrides, canonical-group data, and
+  aggregates.
+- Added `scripts/export-claim-assurance-report.py` for scoped JSON, Markdown,
+  or combined snapshots from a running Observatory API, including printed
+  matching/exported occurrence counts and atomic file writes.
+- Added Claim Triage export links that carry the supported current table filters
+  into JSON and Markdown report downloads.
+- Added saved report job endpoints for creating persisted JSON/Markdown
+  snapshots, inspecting saved job metadata, and downloading stored artifacts.
+- Added retention cleanup for expired claim report jobs.
+- Added ADR-0027 for clickable verdict summary filters and implemented the
+  verdict-backed summary cards as table-filter controls.
+
+Validation:
+- `./.venv/bin/pytest src/tests/test_claim_reports.py` — 4 passed
+- `./.venv/bin/pytest src/tests/test_claim_reports.py src/tests/test_claim_assurance.py src/tests/test_claim_consolidation.py` — 23 passed
+- `./.venv/bin/pytest src/tests/test_claim_reports.py src/tests/test_claim_assurance.py src/tests/test_claim_consolidation.py src/tests/test_retention.py` — 32 passed
+- `npm test -- Hallucinations` — 6 passed
+- `npm run build` — passed with the existing Vite chunk-size warning
+- `./.venv/bin/python -m py_compile src/backend/crud/claim_reports.py scripts/export-claim-assurance-report.py` — passed

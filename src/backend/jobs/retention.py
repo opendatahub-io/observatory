@@ -10,8 +10,10 @@ logger = logging.getLogger(__name__)
 # Retention thresholds
 TELEMETRY_SPANS_RETENTION_DAYS = 90
 PROVENANCE_RETENTION_DAYS = 180  # run_commands, run_packages, run_containers
+CLAIM_REPORT_RETENTION_DAYS = 30
 
 RUNTIME_DATA_TABLES = [
+    "claim_report_jobs",
     "claim_canonical_memberships",
     "claim_equivalence_decisions",
     "claim_similarity_candidates",
@@ -75,6 +77,7 @@ async def purge_old_data(db: aiosqlite.Connection) -> dict:
     now = datetime.now(timezone.utc)
     span_cutoff = (now - timedelta(days=TELEMETRY_SPANS_RETENTION_DAYS)).isoformat()
     provenance_cutoff = (now - timedelta(days=PROVENANCE_RETENTION_DAYS)).isoformat()
+    report_cutoff = (now - timedelta(days=CLAIM_REPORT_RETENTION_DAYS)).isoformat()
 
     counts: dict[str, int] = {}
 
@@ -117,6 +120,12 @@ async def purge_old_data(db: aiosqlite.Connection) -> dict:
         (provenance_cutoff,),
     )
     counts["run_containers"] = cursor.rowcount
+
+    cursor = await db.execute(
+        "DELETE FROM claim_report_jobs WHERE COALESCE(expires_at, created_at) < ?",
+        (report_cutoff,),
+    )
+    counts["claim_report_jobs"] = cursor.rowcount
 
     await db.commit()
 

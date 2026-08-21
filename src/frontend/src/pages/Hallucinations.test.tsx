@@ -136,6 +136,40 @@ describe("Hallucinations v2 triage UX", () => {
     })).toBe(true));
   });
 
+  it("applies the occurrence verdict filter from summary cards", async () => {
+    const api = mockApi();
+    render(<MemoryRouter><Hallucinations /></MemoryRouter>);
+    await screen.findByText("The component retains immutable history.");
+
+    fireEvent.click(screen.getByRole("button", {name: "Filter occurrences by Contradicted"}));
+
+    expect(screen.getByLabelText("Verdict filter")).toHaveValue("contradicted");
+    await waitFor(() => expect(api.mock.calls.some(([input]) => {
+      const url = String(input);
+      return url.includes("/triage/occurrences?") && url.includes("verdict=contradicted");
+    })).toBe(true));
+  });
+
+  it("builds report export links from supported occurrence filters", async () => {
+    mockApi();
+    render(<MemoryRouter><Hallucinations /></MemoryRouter>);
+    await screen.findByText("The component retains immutable history.");
+
+    fireEvent.change(screen.getByLabelText("Verdict filter"), {target: {value: "contradicted"}});
+    fireEvent.change(screen.getByLabelText("Jira filter"), {target: {value: "RFE-42"}});
+    fireEvent.change(screen.getByLabelText("Source filter"), {target: {value: "strategy.md"}});
+    fireEvent.change(screen.getByLabelText("Search claims"), {target: {value: "7"}});
+
+    expect(screen.getByRole("link", {name: "Export JSON"})).toHaveAttribute(
+      "href",
+      "/api/v2/claims/reports/export.json?limit=5000&verdict=contradicted&jira_key=RFE-42&source_file=strategy.md&claim_occurrence_id=7",
+    );
+    expect(screen.getByRole("link", {name: "Export Markdown"})).toHaveAttribute(
+      "href",
+      "/api/v2/claims/reports/export.md?limit=5000&verdict=contradicted&jira_key=RFE-42&source_file=strategy.md&claim_occurrence_id=7",
+    );
+  });
+
   it("distinguishes an empty not-verified state", async () => {
     mockApi(true);
     render(<MemoryRouter><Hallucinations /></MemoryRouter>);

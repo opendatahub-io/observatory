@@ -17,6 +17,14 @@ from backend.crud.claim_assurance import (
     list_occurrences_for_verification,
     get_occurrence_history,
 )
+from backend.crud.claim_reports import (
+    DEFAULT_EXPORT_LIMIT,
+    build_claim_assurance_report,
+    create_claim_report_job,
+    get_claim_report_artifact,
+    get_claim_report_job,
+    render_claim_assurance_markdown,
+)
 from backend.database import get_db
 from backend.crud.claim_consolidation import generate_candidates
 from backend.crud.claim_triage import (
@@ -28,6 +36,7 @@ from backend.crud.claim_triage import (
     list_triage_occurrences,
 )
 from backend.schemas.claim_assurance import (
+    ClaimReportJobInput,
     ExplanationRunInput,
     ExtractionRunInput,
     HumanOverrideInput,
@@ -36,6 +45,7 @@ from backend.schemas.claim_assurance import (
     VerificationRunInput,
 )
 from backend.schemas.claim_consolidation import CandidateGenerationInput
+from fastapi.responses import PlainTextResponse, Response
 
 router = APIRouter(prefix="/api/v2/claims", tags=["claim-assurance"])
 
@@ -107,6 +117,159 @@ async def triage_explanations(
 @router.get("/triage/explanation-facets")
 async def triage_explanation_facets(db: aiosqlite.Connection = Depends(get_db)):
     return await get_triage_explanation_facets(db)
+
+
+def _report_filters(
+    jira_key: str | None,
+    claim_occurrence_id: int | None,
+    normalized_claim_id: int | None,
+    canonical_group_id: int | None,
+    artifact_type: str | None,
+    pipeline_slug: str | None,
+    source_file: str | None,
+    claim_type: str | None,
+    verdict: str | None,
+    processing_state: str | None,
+    explanation_category: str | None,
+    improvement_target: str | None,
+    human_review_required: bool | None,
+    created_after: str | None,
+    created_before: str | None,
+) -> dict:
+    return {
+        "jira_key": jira_key,
+        "claim_occurrence_id": claim_occurrence_id,
+        "normalized_claim_id": normalized_claim_id,
+        "canonical_group_id": canonical_group_id,
+        "artifact_type": artifact_type,
+        "pipeline_slug": pipeline_slug,
+        "source_file": source_file,
+        "claim_type": claim_type,
+        "verdict": verdict,
+        "processing_state": processing_state,
+        "explanation_category": explanation_category,
+        "improvement_target": improvement_target,
+        "human_review_required": human_review_required,
+        "created_after": created_after,
+        "created_before": created_before,
+    }
+
+
+@router.get("/reports/export.json")
+async def export_report_json(
+    jira_key: str | None = None,
+    claim_occurrence_id: int | None = Query(default=None, gt=0),
+    normalized_claim_id: int | None = Query(default=None, gt=0),
+    canonical_group_id: int | None = Query(default=None, gt=0),
+    artifact_type: str | None = None,
+    pipeline_slug: str | None = None,
+    source_file: str | None = None,
+    claim_type: str | None = None,
+    verdict: str | None = Query(
+        default=None,
+        pattern="^(pending|supported|contradicted|insufficient_evidence|not_applicable)$",
+    ),
+    processing_state: str | None = Query(
+        default=None,
+        pattern="^(not_verified|verified_without_explanation|explanation_requires_human_review|explained)$",
+    ),
+    explanation_category: str | None = None,
+    improvement_target: str | None = None,
+    human_review_required: bool | None = None,
+    created_after: str | None = None,
+    created_before: str | None = None,
+    observatory_url: str | None = None,
+    limit: int = Query(default=DEFAULT_EXPORT_LIMIT, ge=1, le=5000),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    return await build_claim_assurance_report(
+        db,
+        _report_filters(
+            jira_key, claim_occurrence_id, normalized_claim_id, canonical_group_id,
+            artifact_type, pipeline_slug, source_file, claim_type, verdict,
+            processing_state, explanation_category, improvement_target,
+            human_review_required, created_after, created_before,
+        ),
+        observatory_url=observatory_url,
+        limit=limit,
+    )
+
+
+@router.get("/reports/export.md", response_class=PlainTextResponse)
+async def export_report_markdown(
+    jira_key: str | None = None,
+    claim_occurrence_id: int | None = Query(default=None, gt=0),
+    normalized_claim_id: int | None = Query(default=None, gt=0),
+    canonical_group_id: int | None = Query(default=None, gt=0),
+    artifact_type: str | None = None,
+    pipeline_slug: str | None = None,
+    source_file: str | None = None,
+    claim_type: str | None = None,
+    verdict: str | None = Query(
+        default=None,
+        pattern="^(pending|supported|contradicted|insufficient_evidence|not_applicable)$",
+    ),
+    processing_state: str | None = Query(
+        default=None,
+        pattern="^(not_verified|verified_without_explanation|explanation_requires_human_review|explained)$",
+    ),
+    explanation_category: str | None = None,
+    improvement_target: str | None = None,
+    human_review_required: bool | None = None,
+    created_after: str | None = None,
+    created_before: str | None = None,
+    observatory_url: str | None = None,
+    limit: int = Query(default=DEFAULT_EXPORT_LIMIT, ge=1, le=5000),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    report = await build_claim_assurance_report(
+        db,
+        _report_filters(
+            jira_key, claim_occurrence_id, normalized_claim_id, canonical_group_id,
+            artifact_type, pipeline_slug, source_file, claim_type, verdict,
+            processing_state, explanation_category, improvement_target,
+            human_review_required, created_after, created_before,
+        ),
+        observatory_url=observatory_url,
+        limit=limit,
+    )
+    return render_claim_assurance_markdown(report)
+
+
+@router.post("/reports", status_code=201)
+async def create_report_job(
+    data: ClaimReportJobInput, db: aiosqlite.Connection = Depends(get_db)
+):
+    return await create_claim_report_job(
+        db,
+        report_format=data.report_format,
+        filters=data.filters,
+        observatory_url=data.observatory_url,
+        limit=data.limit,
+    )
+
+
+@router.get("/reports/{report_id}/download")
+async def report_job_download(
+    report_id: int,
+    report_format: str = Query(default="json", alias="format", pattern="^(json|markdown)$"),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    artifact = await get_claim_report_artifact(db, report_id, report_format)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="report artifact not found")
+    content, media_type = artifact
+    return Response(content=content, media_type=media_type)
+
+
+@router.get("/reports/{report_id}")
+async def report_job_detail(
+    report_id: int, db: aiosqlite.Connection = Depends(get_db)
+):
+    result = await get_claim_report_job(db, report_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="report job not found")
+    return result
 
 
 @router.get("/extraction-runs")

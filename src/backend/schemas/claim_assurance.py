@@ -260,6 +260,13 @@ class RegressionRunInput(BaseModel):
     run_uri: str | None = None
 
 
+class ClaimReportJobInput(BaseModel):
+    report_format: Literal["json", "markdown", "both"] = "both"
+    filters: dict = Field(default_factory=dict)
+    observatory_url: str | None = None
+    limit: int = Field(default=1000, ge=1, le=5000)
+
+
 class StageReceiptEventInput(BaseModel):
     stage: str
     scope_key: str

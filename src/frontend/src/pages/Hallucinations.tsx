@@ -135,6 +135,12 @@ interface IssueRow {
 
 interface Facet { value: string; count: number; }
 
+interface SummaryCard {
+  label: string;
+  value: number;
+  verdictFilter?: string;
+}
+
 const TYPE_CLASSES: Record<string, string> = {
   factual: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300",
   architectural: "bg-violet-100 text-violet-800 dark:bg-violet-900/40 dark:text-violet-300",
@@ -270,6 +276,24 @@ function Hallucinations() {
     else { setSort(value); setSortDir("desc"); }
   };
 
+  const applySummaryVerdictFilter = (value: string) => {
+    setVerdictFilter(value);
+    setActiveTab("claims");
+    setPage(0);
+  };
+
+  const exportUrl = (format: "json" | "md") => {
+    const params = new URLSearchParams({limit: "5000"});
+    if (typeFilter !== "all") params.set("claim_type", typeFilter);
+    if (verdictFilter !== "all") params.set("verdict", verdictFilter);
+    if (jiraFilter.trim()) params.set("jira_key", jiraFilter.trim());
+    if (sourceFilter.trim()) params.set("source_file", sourceFilter.trim());
+    if (searchFilter.trim() && /^\d+$/.test(searchFilter.trim())) {
+      params.set("claim_occurrence_id", searchFilter.trim());
+    }
+    return `/api/v2/claims/reports/export.${format}?${params.toString()}`;
+  };
+
   if (loading) return <div className="py-12 text-center text-gray-500">Loading claim assurance data…</div>;
 
   return <div>
@@ -278,15 +302,26 @@ function Hallucinations() {
     {error && <div className="mb-4 rounded bg-red-50 p-3 text-sm text-red-700">{error}</div>}
 
     {summary && <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-5 lg:grid-cols-10">
-      {[
-        ["Occurrences", summary.total_occurrences], ["Verified", summary.verified],
-        ["Pending", summary.pending], ["Supported", summary.supported],
-        ["Contradicted", summary.contradicted], ["Insufficient", summary.insufficient_evidence],
-        ["N/A", summary.not_applicable], ["Explained", summary.explained],
-        ["Human review", summary.human_review_required], ["Jira keys", summary.jira_keys_referenced],
-      ].map(([label, value]) => <div key={label} className="rounded-xl border border-gray-200 bg-white p-3 text-center dark:border-gray-700 dark:bg-gray-800">
-        <div className="text-xl font-bold">{value}</div><div className="mt-1 text-[10px] uppercase text-gray-500">{label}</div>
-      </div>)}
+      {([
+        {label: "Occurrences", value: summary.total_occurrences, verdictFilter: "all"},
+        {label: "Verified", value: summary.verified},
+        {label: "Pending", value: summary.pending, verdictFilter: "pending"},
+        {label: "Supported", value: summary.supported, verdictFilter: "supported"},
+        {label: "Contradicted", value: summary.contradicted, verdictFilter: "contradicted"},
+        {label: "Insufficient", value: summary.insufficient_evidence, verdictFilter: "insufficient_evidence"},
+        {label: "N/A", value: summary.not_applicable, verdictFilter: "not_applicable"},
+        {label: "Explained", value: summary.explained},
+        {label: "Human review", value: summary.human_review_required},
+        {label: "Jira keys", value: summary.jira_keys_referenced},
+      ] satisfies SummaryCard[]).map((card) => {
+        const active = card.verdictFilter === verdictFilter;
+        const className = `rounded-xl border bg-white p-3 text-center dark:bg-gray-800 ${active ? "border-primary-500 ring-2 ring-primary-200 dark:border-primary-400" : "border-gray-200 dark:border-gray-700"}`;
+        const content = <><div className="text-xl font-bold">{card.value}</div><div className="mt-1 text-[10px] uppercase text-gray-500">{card.label}</div></>;
+        if (!card.verdictFilter) return <div key={card.label} className={className}>{content}</div>;
+        return <button key={card.label} type="button" onClick={() => applySummaryVerdictFilter(card.verdictFilter!)} className={`${className} transition hover:border-primary-400 hover:text-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-400`} aria-pressed={active} aria-label={`Filter occurrences by ${card.label}`}>
+          {content}
+        </button>;
+      })}
     </div>}
 
     {types.length > 0 && <div className="mb-5 flex flex-wrap gap-2">
@@ -309,6 +344,8 @@ function Hallucinations() {
           <option value="supported">Supported</option><option value="contradicted">Contradicted</option>
           <option value="insufficient_evidence">Insufficient evidence</option><option value="not_applicable">Not applicable</option>
         </select>
+        <a href={exportUrl("json")} className="rounded border px-3 py-2 text-sm hover:border-primary-400 hover:text-primary-700">Export JSON</a>
+        <a href={exportUrl("md")} className="rounded border px-3 py-2 text-sm hover:border-primary-400 hover:text-primary-700">Export Markdown</a>
         <span className="self-center text-sm text-gray-500">{occurrenceTotal} occurrences</span>
       </div>
       {occurrences.length === 0 ? <EmptyState text={verdictFilter === "pending" ? "No unverified occurrences match these filters." : "No claim occurrences match these filters."} /> : <div className="mb-4 overflow-x-auto rounded-xl border bg-white dark:border-gray-700 dark:bg-gray-800">

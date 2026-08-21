@@ -748,6 +748,27 @@ CREATE TABLE IF NOT EXISTS claim_consolidation_policies (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS claim_report_jobs (
+    id INTEGER PRIMARY KEY,
+    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'complete', 'failed')),
+    report_format TEXT NOT NULL CHECK (report_format IN ('json', 'markdown', 'both')),
+    filters TEXT NOT NULL DEFAULT '{}',
+    limit_count INTEGER NOT NULL DEFAULT 1000,
+    observatory_url TEXT,
+    summary TEXT NOT NULL DEFAULT '{}',
+    json_report TEXT,
+    markdown_report TEXT,
+    error TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    expires_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_claim_report_jobs_status
+    ON claim_report_jobs(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_claim_report_jobs_expires
+    ON claim_report_jobs(expires_at);
+
 CREATE TABLE IF NOT EXISTS otel_log_records (
     id INTEGER PRIMARY KEY,
     pipeline_run_id INTEGER REFERENCES pipeline_runs(id) ON DELETE CASCADE,
