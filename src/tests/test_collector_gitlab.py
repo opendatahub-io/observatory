@@ -2,6 +2,7 @@
 
 import json
 import logging
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -582,3 +583,23 @@ async def test_gitlab_no_job_filter_collects_all(client):
     assert all(r["job"] is None for r in runs)
     # Only 1 GET call (pipelines list), no jobs fetches
     assert mock_client.get.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_gitlab_checkpoint_is_sent_to_pipeline_api():
+    mock_client = _build_mock_client([
+        _make_mock_response(200, GITLAB_PIPELINE_RESPONSE_TERMINAL),
+    ])
+    checkpoint = datetime(2026, 6, 1, 12, 34, tzinfo=timezone.utc)
+
+    runs = await GitLabCollector()._fetch_pipelines(
+        mock_client,
+        "77777",
+        "https://gitlab.example.com/org/repo",
+        since=checkpoint,
+    )
+
+    assert len(runs) == 4
+    assert mock_client.get.call_args.kwargs["params"]["updated_after"] == (
+        "2026-06-01T12:34:00+00:00"
+    )

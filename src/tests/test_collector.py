@@ -1,7 +1,9 @@
+from datetime import datetime, timezone
+
 import pytest
 
 from backend.database import get_db
-from backend.collector.scheduler import run_collector_cycle
+from backend.collector.scheduler import _collection_since, run_collector_cycle
 from backend.collector.crud import (
     get_collector_state,
     get_collector_states,
@@ -49,6 +51,12 @@ async def test_run_collector_cycle_empty_db(client):
     # No pipelines means no collector_state rows
     states = await get_collector_states(db)
     assert states == []
+
+
+def test_collection_since_uses_overlap_window():
+    result = _collection_since({"last_collected_at": "2026-06-01T12:34:00Z"})
+
+    assert result == datetime(2026, 6, 1, 12, 29, tzinfo=timezone.utc)
 
 
 @pytest.mark.asyncio

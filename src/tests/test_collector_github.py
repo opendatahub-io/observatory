@@ -1,5 +1,6 @@
 import json
 import logging
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -381,3 +382,25 @@ async def test_github_no_job_filter_collects_all():
     # All workflow names should be preserved
     names = [r["job"] for r in runs]
     assert names == ["CI", "Lint", "Build", "Deploy"]
+
+
+@pytest.mark.asyncio
+async def test_github_checkpoint_is_sent_to_workflow_runs_api():
+    mock_response = _make_mock_response(json_data={"workflow_runs": []})
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    checkpoint = datetime(2026, 6, 1, 12, 34, tzinfo=timezone.utc)
+    with patch("backend.config.settings") as mock_settings, \
+         patch("backend.collector.github.httpx.AsyncClient", return_value=mock_client):
+        mock_settings.github_token = "ghp_test_token_123"
+        await GitHubCollector().collect_runs(
+            db=None, pipeline=SAMPLE_PIPELINE, since=checkpoint,
+        )
+
+    assert mock_client.get.call_args.kwargs["params"] == {
+        "per_page": 20,
+        "created": ">=2026-06-01",
+    }

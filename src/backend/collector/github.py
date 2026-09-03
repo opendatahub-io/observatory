@@ -65,7 +65,13 @@ def _compute_duration(created_at: str, updated_at: str) -> int | None:
 class GitHubCollector(PlatformCollector):
     """Collector that fetches workflow runs from the GitHub Actions API."""
 
-    async def collect_runs(self, db, pipeline: dict) -> list[dict]:
+    async def collect_runs(
+        self,
+        db,
+        pipeline: dict,
+        *,
+        since: datetime | None = None,
+    ) -> list[dict]:
         # Try DB credential first, then fall back to env var
         token = None
         try:
@@ -93,7 +99,10 @@ class GitHubCollector(PlatformCollector):
             logger.error("Invalid repo_url for pipeline %s: %s", pipeline.get("slug", "?"), repo_url)
             return []
 
-        url = f"{API_BASE}/repos/{owner}/{repo}/actions/runs?per_page=20"
+        url = f"{API_BASE}/repos/{owner}/{repo}/actions/runs"
+        params = {"per_page": 20}
+        if since is not None:
+            params["created"] = f">={since.date().isoformat()}"
         headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
@@ -101,7 +110,9 @@ class GitHubCollector(PlatformCollector):
 
         try:
             async with httpx.AsyncClient(verify=backend.config.settings.ssl_verify) as client:
-                response = await client.get(url, headers=headers, timeout=30.0)
+                response = await client.get(
+                    url, params=params, headers=headers, timeout=30.0,
+                )
 
                 # Check rate limiting
                 remaining = response.headers.get("x-ratelimit-remaining")

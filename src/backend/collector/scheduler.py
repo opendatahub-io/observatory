@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import backend.config
 from backend.collector.artifacts import download_and_process_artifacts
@@ -12,6 +12,23 @@ from backend.collector.data_repo import collect_data_repo
 from backend.database import get_db
 
 logger = logging.getLogger(__name__)
+
+_CHECKPOINT_OVERLAP = timedelta(minutes=5)
+
+
+def _collection_since(state: dict | None) -> datetime | None:
+    """Return an overlapping checkpoint for an existing collector state."""
+    if not state or not state.get("last_collected_at"):
+        return None
+    try:
+        checkpoint = datetime.fromisoformat(
+            state["last_collected_at"].replace("Z", "+00:00"),
+        )
+    except (TypeError, ValueError):
+        return None
+    if checkpoint.tzinfo is None:
+        checkpoint = checkpoint.replace(tzinfo=timezone.utc)
+    return checkpoint - _CHECKPOINT_OVERLAP
 
 
 async def run_collector_cycle(db) -> None:
@@ -33,7 +50,16 @@ async def run_collector_cycle(db) -> None:
 
         try:
             collector = get_collector(platform)
-            runs = await collector.collect_runs(db, pipeline_dict)
+            state_cursor = await db.execute(
+                "SELECT * FROM collector_state WHERE pipeline_id = ?",
+                (pipeline_id,),
+            )
+            state_row = await state_cursor.fetchone()
+            runs = await collector.collect_runs(
+                db,
+                pipeline_dict,
+                since=_collection_since(dict(state_row) if state_row else None),
+            )
 
             # Upsert each run into pipeline_runs
             for run in runs:

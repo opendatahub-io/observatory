@@ -80,7 +80,13 @@ def _compute_duration(created_at: str | None, updated_at: str | None) -> int | N
 class GitLabCollector(PlatformCollector):
     """Collects pipeline runs from the GitLab CI API."""
 
-    async def collect_runs(self, db, pipeline: dict) -> list[dict]:
+    async def collect_runs(
+        self,
+        db,
+        pipeline: dict,
+        *,
+        since: datetime | None = None,
+    ) -> list[dict]:
         # Try DB credential first, then fall back to env var
         token = None
         try:
@@ -132,6 +138,7 @@ class GitLabCollector(PlatformCollector):
                 jobs_list=jobs_list,
                 patterns_list=patterns_list,
                 filtering=filtering,
+                since=since,
             )
 
     async def _resolve_project_id(
@@ -198,6 +205,7 @@ class GitLabCollector(PlatformCollector):
         jobs_list: list[str] | None = None,
         patterns_list: list[str] | None = None,
         filtering: bool = False,
+        since: datetime | None = None,
     ) -> list[dict]:
         """Fetch recent pipelines from the GitLab API and return mapped run dicts."""
         jobs_list = jobs_list or []
@@ -208,15 +216,18 @@ class GitLabCollector(PlatformCollector):
 
         for page in range(1, max_pages + 1):
             try:
+                params = {
+                    "ref": "main",
+                    "per_page": 100,
+                    "page": page,
+                    "order_by": "id",
+                    "sort": "desc",
+                }
+                if since is not None:
+                    params["updated_after"] = since.isoformat()
                 resp = await client.get(
                     f"/projects/{project_id}/pipelines",
-                    params={
-                        "ref": "main",
-                        "per_page": 100,
-                        "page": page,
-                        "order_by": "id",
-                        "sort": "desc",
-                    },
+                    params=params,
                 )
                 await self._check_rate_limit(resp)
 
